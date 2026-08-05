@@ -77,6 +77,16 @@ input {
   padding: 0.8rem;
 }
 
+textarea {
+  border: 1px solid #526258;
+  border-radius: 0.55rem;
+  background: #19231d;
+  color: inherit;
+  line-height: 1.5;
+  padding: 0.8rem;
+  resize: vertical;
+}
+
 form button {
   border: 0;
   border-radius: 999px;
@@ -157,27 +167,164 @@ h1 {
 }
 
 .private-home__welcome p:last-child,
-.empty-state p:last-child {
+.check-in-card__description,
+.pivot-card > p,
+.pivot-result > p {
   color: #b8c4ba;
   line-height: 1.5;
   margin-top: 1rem;
 }
 
-.empty-state {
+.check-in-card,
+.pivot-card,
+.pivot-result {
   align-self: end;
   border-top: 1px solid #344137;
   padding-top: 1.5rem;
 }
 
-.empty-state__mark {
-  color: #a9d5ac;
-  font-size: 2.75rem;
-  line-height: 0.5;
+.check-in-card h2,
+.pivot-card h2,
+.pivot-result h2 {
+  font-size: clamp(1.65rem, 7vw, 2.4rem);
+  letter-spacing: -0.04em;
+  line-height: 1;
+  margin-top: 0.7rem;
 }
 
-.empty-state h2 {
-  font-size: 1.1rem;
-  margin-top: 0.8rem;
+.check-in-card form {
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.check-in-card form > label {
+  color: #c8ecca;
+}
+
+.check-in-card fieldset {
+  border: 0;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+
+.check-in-card legend {
+  font-size: 0.92rem;
+  font-weight: 700;
+  padding: 0;
+}
+
+.rating-options {
+  display: flex;
+  gap: 0.55rem;
+  margin-top: 0.7rem;
+}
+
+.rating-options label {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  font-weight: 400;
+  justify-content: center;
+}
+
+.rating-options input {
+  block-size: 1px;
+  inline-size: 1px;
+  opacity: 0;
+  position: absolute;
+}
+
+.rating-options span {
+  align-items: center;
+  border: 1px solid #526258;
+  border-radius: 50%;
+  display: flex;
+  height: 2.6rem;
+  justify-content: center;
+  width: 2.6rem;
+}
+
+.rating-options input:checked + span {
+  background: #a9d5ac;
+  color: #102014;
+  font-weight: 700;
+}
+
+.rating-options input:focus-visible + span,
+button:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #e0f2df;
+  outline-offset: 3px;
+}
+
+.rating-legend {
+  color: #829084;
+  display: flex;
+  font-size: 0.78rem;
+  justify-content: space-between;
+  margin-top: 0.5rem;
+}
+
+.pivot-card > button,
+.pivot-result button,
+.safety-link {
+  border: 0;
+  border-radius: 999px;
+  background: #a9d5ac;
+  color: #102014;
+  cursor: pointer;
+  font-weight: 700;
+  margin-top: 1.5rem;
+  padding: 0.85rem 1rem;
+}
+
+.safety-link {
+  display: inline-block;
+  text-decoration: none;
+}
+
+.pivot-explanation {
+  color: #d3e3d4 !important;
+}
+
+.alternatives {
+  border-top: 1px solid #344137;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+}
+
+.alternatives h3 {
+  color: #b8c4ba;
+  font-size: 0.92rem;
+  margin: 0 0 0.7rem;
+}
+
+.alternatives button {
+  background: transparent;
+  border: 1px solid #526258;
+  border-radius: 999px;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  margin-top: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  text-align: left;
+  width: 100%;
+}
+
+.pivot-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.pivot-actions .text-button {
+  margin-top: 0;
+}
+
+.privacy-note {
+  color: #829084 !important;
+  font-size: 0.85rem;
 }
 
 @media (min-width: 48rem) {
