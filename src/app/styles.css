@@ -213,6 +213,45 @@ h1 {
   padding: 0;
 }
 
+.memory-controls {
+  border-top: 1px solid #344137;
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+}
+
+.choice-control {
+  align-items: flex-start;
+  display: flex;
+  font-weight: 400;
+  gap: 0.7rem;
+  line-height: 1.35;
+}
+
+.choice-control input {
+  accent-color: #a9d5ac;
+  flex: 0 0 auto;
+  margin: 0.2rem 0 0;
+  padding: 0;
+}
+
+.choice-control span {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.choice-control strong {
+  color: #d3e3d4;
+}
+
+.choice-control small,
+.optional {
+  color: #829084;
+  font-size: 0.82rem;
+  font-weight: 400;
+}
+
 .rating-options {
   display: flex;
   gap: 0.55rem;
@@ -325,6 +364,95 @@ textarea:focus-visible {
 .privacy-note {
   color: #829084 !important;
   font-size: 0.85rem;
+}
+
+.outcome-form {
+  gap: 1.25rem;
+}
+
+.outcome-form fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.outcome-form legend {
+  font-size: 0.92rem;
+  font-weight: 700;
+  padding: 0;
+}
+
+.outcome-options {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+
+.outcome-options .choice-control {
+  border: 1px solid #526258;
+  border-radius: 0.55rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.rating-options--outcome {
+  gap: 0.4rem;
+}
+
+.history-card {
+  border-top: 1px solid #344137;
+  margin-top: 2rem;
+  padding: 1.5rem 0 2rem;
+}
+
+.history-card h2 {
+  font-size: 1.5rem;
+  letter-spacing: -0.04em;
+  margin-top: 0.6rem;
+}
+
+.history-card ul {
+  display: grid;
+  gap: 0.75rem;
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+
+.history-card li {
+  border: 1px solid #344137;
+  border-radius: 0.55rem;
+  padding: 0.85rem;
+}
+
+.history-card li p {
+  line-height: 1.4;
+}
+
+.history-card li span {
+  color: #a9d5ac;
+  display: block;
+  font-size: 0.82rem;
+  margin-top: 0.5rem;
+}
+
+.history-card details {
+  color: #b8c4ba;
+  font-size: 0.82rem;
+  margin-top: 0.75rem;
+}
+
+.history-card summary {
+  color: #c8ecca;
+  cursor: pointer;
+}
+
+.history-card details p {
+  margin-top: 0.35rem;
+}
+
+.history-delete {
+  font-size: 0.82rem;
+  margin-top: 0.75rem;
 }
 
 @media (min-width: 48rem) {
