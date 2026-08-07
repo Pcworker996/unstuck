@@ -1,4 +1,5 @@
 import type { CurrentCheckIn, Pivot, PivotKind, EmotionalState } from "./pivot-protocol";
+import { createEmbedding, derivedMemoryText } from "./semantic-retrieval";
 
 export type PivotOutcomeKind =
   | "completed"
@@ -20,6 +21,7 @@ export type SavedCheckIn = {
     selectedPivotKind: PivotKind;
     outcome: PivotOutcomeKind;
     updatedEmotionalState?: EmotionalState;
+    embedding: readonly number[];
   };
   selectedPivot: Pivot;
   pivotOutcome: PivotOutcome;
@@ -61,7 +63,15 @@ export function completeCheckIn({
         emotionalState: checkIn.emotionalState,
         selectedPivotKind: selectedPivot.kind,
         outcome: outcome.kind,
-        updatedEmotionalState: outcome.updatedEmotionalState
+        updatedEmotionalState: outcome.updatedEmotionalState,
+        embedding: createEmbedding(
+          derivedMemoryText({
+            quickDump: checkIn.quickDump,
+            emotionalState: checkIn.emotionalState,
+            selectedPivotKind: selectedPivot.kind,
+            outcome: outcome.kind
+          })
+        )
       },
       selectedPivot,
       pivotOutcome: outcome

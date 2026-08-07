@@ -326,6 +326,23 @@ textarea:focus-visible {
   color: #d3e3d4 !important;
 }
 
+.pivot-explanation strong {
+  color: #a9d5ac;
+  display: block;
+  font-size: 0.86rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pivot-explanation p {
+  margin: 0.45rem 0 0;
+}
+
+.pivot-explanation .memory-explanation {
+  color: #aebdaf;
+  font-size: 0.9rem;
+}
+
 .alternatives {
   border-top: 1px solid #344137;
   margin-top: 1.5rem;

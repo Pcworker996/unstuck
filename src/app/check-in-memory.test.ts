@@ -35,7 +35,8 @@ describe("completeCheckIn", () => {
           emotionalState: 4,
           selectedPivotKind: "task-first-step",
           outcome: "partly-helpful",
-          updatedEmotionalState: 3
+          updatedEmotionalState: 3,
+          embedding: expect.any(Array)
         },
         selectedPivot: pivot,
         pivotOutcome: { kind: "partly-helpful", updatedEmotionalState: 3 }

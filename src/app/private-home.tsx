@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
-import { runPivotProtocol } from "./pivot-protocol";
 import type {
   CurrentCheckIn,
   EmotionalState,
@@ -11,6 +10,7 @@ import type {
   PivotProtocol,
   PivotProtocolResult
 } from "./pivot-protocol";
+import { runPivotProtocol } from "./pivot-protocol";
 import {
   completeCheckIn,
   loadSavedCheckIns,
@@ -20,6 +20,7 @@ import {
   type PivotOutcomeKind,
   type SavedCheckIn
 } from "./check-in-memory";
+import { runPersonalizedPivotProtocol } from "./semantic-retrieval";
 import type { PersonalAccount } from "./private-home-state";
 
 const EMOTIONAL_STATE_RATINGS: readonly EmotionalState[] = [1, 2, 3, 4, 5];
@@ -67,8 +68,13 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
       return;
     }
 
-    const nextProtocol = runPivotProtocol(checkIn);
-    if (nextProtocol.kind !== "safety-interruption" && !consentGiven) {
+    const nextProtocol = runPersonalizedPivotProtocol({
+      accountId: person.id,
+      checkIn,
+      consentGiven,
+      memories: savedCheckIns
+    });
+    if (nextProtocol.kind === "consent-required") {
       return;
     }
 
@@ -309,14 +315,33 @@ function PivotRecommendation({
   protocol: PivotProtocol;
   saveCheckIn: boolean;
 }) {
-  const { primary, alternatives, whyThisPivot } = protocol.recommendation;
+  const {
+    primary,
+    alternatives,
+    whyThisPivot,
+    source,
+    memoryExplanation
+  } = protocol.recommendation;
 
   return (
     <section aria-labelledby="pivot-heading" className="pivot-card">
       <p className="eyebrow">A possible next step</p>
       <h2 id="pivot-heading">{primary.title}</h2>
       <p>{primary.instruction}</p>
-      <p className="pivot-explanation">{whyThisPivot}</p>
+      <div className="pivot-explanation">
+        <strong>{source === "personalized-memory" ? "A pattern from your history" : "A curated starting point"}</strong>
+        <p>{whyThisPivot}</p>
+        {memoryExplanation ? (
+          <p className="memory-explanation">
+            You can inspect the saved Check-in behind this suggestion in Private history.
+            Prior outcome: {outcomeLabel(memoryExplanation.outcome)}.
+          </p>
+        ) : (
+          <p className="memory-explanation">
+            No similar helpful saved Check-in was available, so this recommendation is not personalized.
+          </p>
+        )}
+      </div>
       <button onClick={() => onChoose(primary)} type="button">
         Choose this Pivot
       </button>

@@ -1,3 +1,5 @@
+import type { RetrievedMemory } from "./semantic-retrieval";
+
 export type EmotionalState = 1 | 2 | 3 | 4 | 5;
 
 export type CurrentCheckIn = {
@@ -26,6 +28,12 @@ export type PivotProtocol = {
     primary: Pivot;
     alternatives: Pivot[];
     whyThisPivot: string;
+    source: "curated-fallback" | "personalized-memory";
+    memoryExplanation?: {
+      memoryId: string;
+      pivotTitle: string;
+      outcome: "completed" | "partly-helpful";
+    };
   };
   savedCheckIn: {
     privateEntry: false;
@@ -122,7 +130,8 @@ function explanationFor(pivot: Pivot): string {
 
 export function runPivotProtocol(
   checkIn: CurrentCheckIn,
-  regenerationOffset = 0
+  regenerationOffset = 0,
+  retrievedMemory?: RetrievedMemory
 ): PivotProtocolResult {
   if (indicatesImmediateDanger(checkIn.quickDump)) {
     return {
@@ -135,10 +144,13 @@ export function runPivotProtocol(
     };
   }
 
-  const preferredIndex = preferredPivotIndex(
-    checkIn.quickDump,
-    checkIn.emotionalState
-  );
+  const personalizedIndex = retrievedMemory
+    ? PIVOT_LIBRARY.findIndex((pivot) => pivot.kind === retrievedMemory.selectedPivot.kind)
+    : -1;
+  const preferredIndex =
+    personalizedIndex >= 0
+      ? personalizedIndex
+      : preferredPivotIndex(checkIn.quickDump, checkIn.emotionalState);
   const primaryIndex =
     (preferredIndex + regenerationOffset) % PIVOT_LIBRARY.length;
   const primary = PIVOT_LIBRARY[primaryIndex];
@@ -153,11 +165,27 @@ export function runPivotProtocol(
     recommendation: {
       primary,
       alternatives: [...alternatives],
-      whyThisPivot: explanationFor(primary)
+      whyThisPivot: retrievedMemory
+        ? `A similar prior Check-in was followed by “${retrievedMemory.selectedPivot.title},” which you marked ${outcomeLabel(retrievedMemory.pivotOutcome.kind)}.`
+        : explanationFor(primary),
+      source: retrievedMemory ? "personalized-memory" : "curated-fallback",
+      ...(retrievedMemory
+        ? {
+            memoryExplanation: {
+              memoryId: retrievedMemory.id,
+              pivotTitle: retrievedMemory.selectedPivot.title,
+              outcome: retrievedMemory.pivotOutcome.kind
+            }
+          }
+        : {})
     },
     savedCheckIn: {
       privateEntry: false,
       derivedMemory: false
     }
   };
+}
+
+function outcomeLabel(outcome: "completed" | "partly-helpful"): string {
+  return outcome === "completed" ? "completed" : "partly helpful";
 }
