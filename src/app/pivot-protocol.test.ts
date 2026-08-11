@@ -88,4 +88,88 @@ describe("runPivotProtocol", () => {
       }
     });
   });
+
+  it("prioritizes a safety interruption for direct danger to another person", () => {
+    const result = runPivotProtocol({
+      quickDump: "I might harm another person right now, even though I need to finish this project.",
+      emotionalState: 5
+    });
+
+    expect(result.kind).toBe("safety-interruption");
+  });
+
+  it("recognizes lethal danger to another person", () => {
+    const result = runPivotProtocol({
+      quickDump: "I might kill someone right now.",
+      emotionalState: 5
+    });
+
+    expect(result.kind).toBe("safety-interruption");
+  });
+
+  it.each([
+    "I might harm my child right now.",
+    "I may kill my neighbor right now.",
+    "I might shoot someone right now."
+  ])("interrupts direct danger wording: %s", (quickDump) => {
+    const result = runPivotProtocol({ quickDump, emotionalState: 5 });
+
+    expect(result.kind).toBe("safety-interruption");
+  });
+
+  it("does not treat a negated immediate-danger statement as direct danger by itself", () => {
+    const result = runPivotProtocol({
+      quickDump: "I am not in immediate danger, but I feel overwhelmed by this project.",
+      emotionalState: 4
+    });
+
+    expect(result.kind).toBe("pivot-protocol");
+  });
+
+  it.each([
+    "I will not hurt someone right now.",
+    "I am not suicidal.",
+    "I am not going to hurt myself.",
+    "I hurt someone yesterday.",
+    "I might have hurt someone yesterday.",
+    "I was going to hurt myself yesterday.",
+    "I had suicidal thoughts but am safe now.",
+    "I do not feel unsafe right now."
+  ])("does not interrupt negated or historical danger wording: %s", (quickDump) => {
+    const result = runPivotProtocol({ quickDump, emotionalState: 4 });
+
+    expect(result.kind).toBe("pivot-protocol");
+  });
+
+  it.each([
+    "I want to die right now.",
+    "I plan to overdose.",
+    "I might poison myself right now.",
+    "I am going to stab him right now.",
+    "I might hurt my kid right now.",
+    "I am thinking about hurting myself right now.",
+    "I am thinking about harming someone right now.",
+    "I am not safe now.",
+    "I am safe now but I might hurt myself.",
+    "I might harm my wife right now.",
+    "I am currently unsafe.",
+    "I feel unsafe at the moment.",
+    "I don't want to hurt myself, but I might."
+  ])(
+    "interrupts direct self-danger wording: %s",
+    (quickDump) => {
+      const result = runPivotProtocol({ quickDump, emotionalState: 5 });
+
+      expect(result.kind).toBe("safety-interruption");
+    }
+  );
+
+  it("recognizes saying that the person is not safe right now", () => {
+    const result = runPivotProtocol({
+      quickDump: "I am not safe right now and need urgent help.",
+      emotionalState: 5
+    });
+
+    expect(result.kind).toBe("safety-interruption");
+  });
 });

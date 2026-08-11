@@ -42,6 +42,7 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
   const [protocol, setProtocol] = useState<PivotProtocolResult>();
   const [regenerationOffset, setRegenerationOffset] = useState(0);
   const [consentGiven, setConsentGiven] = useState(false);
+  const [consentError, setConsentError] = useState(false);
   const [saveCheckIn, setSaveCheckIn] = useState(false);
   const [flowState, setFlowState] = useState<
     "check-in" | "outcome" | "completed" | "dismissed"
@@ -75,6 +76,7 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
       memories: savedCheckIns
     });
     if (nextProtocol.kind === "consent-required") {
+      setConsentError(true);
       return;
     }
 
@@ -129,6 +131,7 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
     setChosenPivot(undefined);
     setCompletion(undefined);
     setConsentGiven(false);
+    setConsentError(false);
     setSaveCheckIn(false);
     setFlowState("check-in");
   }
@@ -203,9 +206,9 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
                   onChange={(event) => {
                     const nextConsent = event.target.checked;
                     setConsentGiven(nextConsent);
+                    setConsentError(false);
                     setSaveCheckIn(nextConsent);
                   }}
-                  required
                   type="checkbox"
                 />
                 <span>
@@ -228,6 +231,13 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
                 </span>
               </label>
             </div>
+            {consentError ? (
+              <p className="form-error" role="alert">
+                Consent is required for ordinary Pivot processing. If you indicate immediate
+                danger, Unstuck will route you to urgent human support without saving this
+                Check-in.
+              </p>
+            ) : null}
             <button type="submit">Suggest a Pivot</button>
           </form>
         </section>
@@ -283,10 +293,15 @@ function createCheckInId() {
 
 function SafetyInterruptionNotice() {
   return (
-    <section aria-labelledby="safety-heading" className="pivot-result safety-interruption">
+    <section
+      aria-describedby="safety-description"
+      aria-labelledby="safety-heading"
+      className="pivot-result safety-interruption"
+      role="alert"
+    >
       <p className="eyebrow">Pause here</p>
       <h2 id="safety-heading">Please move toward urgent human support now.</h2>
-      <p>
+      <p id="safety-description">
         Unstuck cannot help with immediate danger. Call your local emergency number,
         go to an emergency department, or contact someone you trust and ask them to
         stay with you.
@@ -297,6 +312,9 @@ function SafetyInterruptionNotice() {
       >
         Text someone I trust
       </a>
+      <p className="privacy-note">
+        Unstuck is a non-clinical self-regulation companion, not crisis support.
+      </p>
       <p className="privacy-note">This Check-in was not saved.</p>
     </section>
   );

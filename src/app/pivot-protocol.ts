@@ -1,4 +1,5 @@
 import type { RetrievedMemory } from "./semantic-retrieval";
+import { indicatesImmediateDanger } from "./safety-interruption";
 
 export type EmotionalState = 1 | 2 | 3 | 4 | 5;
 
@@ -105,12 +106,6 @@ function preferredPivotIndex(quickDump: string, emotionalState: EmotionalState):
   }
 
   return emotionalState >= 4 ? 0 : 4;
-}
-
-function indicatesImmediateDanger(quickDump: string): boolean {
-  return /(hurt myself|harm myself|kill myself|end my life|suicid|hurt someone|harm someone|unsafe right now|immediate danger)/i.test(
-    quickDump
-  );
 }
 
 function explanationFor(pivot: Pivot): string {

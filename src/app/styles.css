@@ -252,6 +252,12 @@ h1 {
   font-weight: 400;
 }
 
+.form-error {
+  color: #f0b2a8;
+  font-size: 0.9rem;
+  margin: 0.25rem 0 0;
+}
+
 .rating-options {
   display: flex;
   gap: 0.55rem;
