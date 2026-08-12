@@ -87,12 +87,14 @@ export function runPersonalizedPivotProtocol({
   checkIn,
   consentGiven,
   memories,
+  forgottenMemoryIds = [],
   embeddingProvider = deterministicEmbeddingProvider
 }: {
   accountId: string;
   checkIn: CurrentCheckIn;
   consentGiven: boolean;
   memories: readonly SavedCheckIn[];
+  forgottenMemoryIds?: readonly string[];
   embeddingProvider?: EmbeddingProvider;
 }): PersonalizedPivotResult {
   const safetyResult = runPivotProtocol(checkIn);
@@ -108,6 +110,7 @@ export function runPersonalizedPivotProtocol({
     accountId,
     checkIn,
     memories,
+    forgottenMemoryIds,
     embeddingProvider
   });
 
@@ -139,16 +142,20 @@ export function retrieveSimilarMemory({
   accountId,
   checkIn,
   memories,
+  forgottenMemoryIds = [],
   embeddingProvider = deterministicEmbeddingProvider
 }: {
   accountId: string;
   checkIn: CurrentCheckIn;
   memories: readonly SavedCheckIn[];
+  forgottenMemoryIds?: readonly string[];
   embeddingProvider?: EmbeddingProvider;
 }): SemanticRetrieval {
   const ownerMemories = memories.filter(
     (memory): memory is HelpfulSavedCheckIn =>
-      memory.accountId === accountId && isHelpfulOutcome(memory.pivotOutcome.kind)
+      memory.accountId === accountId &&
+      !forgottenMemoryIds.includes(memory.id) &&
+      isHelpfulOutcome(memory.pivotOutcome.kind)
   );
 
   if (ownerMemories.length === 0) {

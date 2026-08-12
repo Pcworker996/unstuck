@@ -41,6 +41,45 @@ export type CheckInCompletion = {
   savedCheckIn?: SavedCheckIn;
 };
 
+export function inspectSavedCheckIns(
+  accountId: string,
+  records: readonly SavedCheckIn[]
+): SavedCheckIn[] {
+  return records.filter((record) => record.accountId === accountId);
+}
+
+export function deleteSavedCheckIn(
+  records: readonly SavedCheckIn[],
+  accountId: string,
+  checkInId: string
+): SavedCheckIn[] {
+  return records.filter(
+    (record) => record.accountId !== accountId || record.id !== checkInId
+  );
+}
+
+export function forgetPattern({
+  accountId,
+  checkInId,
+  records,
+  forgottenMemoryIds
+}: {
+  accountId: string;
+  checkInId: string;
+  records: readonly SavedCheckIn[];
+  forgottenMemoryIds: readonly string[];
+}): string[] {
+  const belongsToAccount = records.some(
+    (record) => record.accountId === accountId && record.id === checkInId
+  );
+
+  if (!belongsToAccount) {
+    return [...forgottenMemoryIds];
+  }
+
+  return [...new Set([...forgottenMemoryIds, checkInId])];
+}
+
 export function completeCheckIn({
   accountId,
   checkInId,
@@ -80,6 +119,7 @@ export function completeCheckIn({
 }
 
 const savedCheckInsStoragePrefix = "unstuck:saved-check-ins:";
+const forgottenMemoryIdsStoragePrefix = "unstuck:forgotten-memory-ids:";
 
 export function loadSavedCheckIns(accountId: string): SavedCheckIn[] {
   if (typeof window === "undefined") {
@@ -127,6 +167,48 @@ export function persistSavedCheckIns(
   }
 }
 
+export function loadForgottenMemoryIds(accountId: string): string[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const stored = window.localStorage.getItem(forgottenMemoryIdsStorageKey(accountId));
+    if (!stored) {
+      return [];
+    }
+
+    const records = JSON.parse(stored) as unknown;
+    return Array.isArray(records)
+      ? records.filter((record): record is string => typeof record === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function persistForgottenMemoryIds(
+  accountId: string,
+  memoryIds: readonly string[]
+): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      forgottenMemoryIdsStorageKey(accountId),
+      JSON.stringify([...new Set(memoryIds)])
+    );
+  } catch {
+    // A storage failure should not interrupt the one-off Pivot flow.
+  }
+}
+
 function savedCheckInsStorageKey(accountId: string): string {
   return `${savedCheckInsStoragePrefix}${encodeURIComponent(accountId)}`;
+}
+
+function forgottenMemoryIdsStorageKey(accountId: string): string {
+  return `${forgottenMemoryIdsStoragePrefix}${encodeURIComponent(accountId)}`;
 }

@@ -13,8 +13,12 @@ import type {
 import { runPivotProtocol } from "./pivot-protocol";
 import {
   completeCheckIn,
+  deleteSavedCheckIn,
+  forgetPattern,
   loadSavedCheckIns,
+  loadForgottenMemoryIds,
   persistSavedCheckIns,
+  persistForgottenMemoryIds,
   type CheckInCompletion,
   type PivotOutcome,
   type PivotOutcomeKind,
@@ -52,10 +56,17 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
   const [savedCheckIns, setSavedCheckIns] = useState<SavedCheckIn[]>(() =>
     loadSavedCheckIns(person.id)
   );
+  const [forgottenMemoryIds, setForgottenMemoryIds] = useState<string[]>(() =>
+    loadForgottenMemoryIds(person.id)
+  );
 
   useEffect(() => {
     persistSavedCheckIns(person.id, savedCheckIns);
   }, [person.id, savedCheckIns]);
+
+  useEffect(() => {
+    persistForgottenMemoryIds(person.id, forgottenMemoryIds);
+  }, [person.id, forgottenMemoryIds]);
 
   function submitCheckIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -73,7 +84,8 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
       accountId: person.id,
       checkIn,
       consentGiven,
-      memories: savedCheckIns
+      memories: savedCheckIns,
+      forgottenMemoryIds
     });
     if (nextProtocol.kind === "consent-required") {
       setConsentError(true);
@@ -136,8 +148,20 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
     setFlowState("check-in");
   }
 
-  function deleteSavedCheckIn(checkInId: string) {
-    setSavedCheckIns((current) => current.filter((record) => record.id !== checkInId));
+  function handleDeleteSavedCheckIn(checkInId: string) {
+    setSavedCheckIns((current) => deleteSavedCheckIn(current, person.id, checkInId));
+    setForgottenMemoryIds((current) => current.filter((id) => id !== checkInId));
+  }
+
+  function forgetSavedPattern(checkInId: string) {
+    setForgottenMemoryIds((current) =>
+      forgetPattern({
+        accountId: person.id,
+        checkInId,
+        records: savedCheckIns,
+        forgottenMemoryIds: current
+      })
+    );
   }
 
   return (
@@ -281,7 +305,12 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
       ) : null}
 
       {savedCheckIns.length > 0 ? (
-        <SavedHistory onDelete={deleteSavedCheckIn} records={savedCheckIns} />
+        <SavedHistory
+          forgottenMemoryIds={forgottenMemoryIds}
+          onDelete={handleDeleteSavedCheckIn}
+          onForgetPattern={forgetSavedPattern}
+          records={savedCheckIns}
+        />
       ) : null}
     </main>
   );
@@ -351,8 +380,7 @@ function PivotRecommendation({
         <p>{whyThisPivot}</p>
         {memoryExplanation ? (
           <p className="memory-explanation">
-            You can inspect the saved Check-in behind this suggestion in Private history.
-            Prior outcome: {outcomeLabel(memoryExplanation.outcome)}.
+            {memoryExplanation.text} You can inspect or forget this memory in Private history.
           </p>
         ) : (
           <p className="memory-explanation">
@@ -508,10 +536,14 @@ function CompletionNotice({
 }
 
 function SavedHistory({
+  forgottenMemoryIds,
   onDelete,
+  onForgetPattern,
   records
 }: {
+  forgottenMemoryIds: readonly string[];
   onDelete: (checkInId: string) => void;
+  onForgetPattern: (checkInId: string) => void;
   records: readonly SavedCheckIn[];
 }) {
   return (
@@ -539,8 +571,21 @@ function SavedHistory({
               onClick={() => onDelete(record.id)}
               type="button"
             >
-              Delete this Check-in
+              Delete this Check-in and its memory
             </button>
+            {forgottenMemoryIds.includes(record.id) ? (
+              <p className="privacy-note">
+                This Derived memory has been forgotten and will not influence future Pivots.
+              </p>
+            ) : (
+              <button
+                className="text-button"
+                onClick={() => onForgetPattern(record.id)}
+                type="button"
+              >
+                Forget this pattern
+              </button>
+            )}
           </li>
         ))}
       </ul>

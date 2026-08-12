@@ -34,6 +34,7 @@ export type PivotProtocol = {
       memoryId: string;
       pivotTitle: string;
       outcome: "completed" | "partly-helpful";
+      text: string;
     };
   };
   savedCheckIn: {
@@ -161,7 +162,7 @@ export function runPivotProtocol(
       primary,
       alternatives: [...alternatives],
       whyThisPivot: retrievedMemory
-        ? `A similar prior Check-in was followed by “${retrievedMemory.selectedPivot.title},” which you marked ${outcomeLabel(retrievedMemory.pivotOutcome.kind)}.`
+        ? memoryExplanationText(retrievedMemory)
         : explanationFor(primary),
       source: retrievedMemory ? "personalized-memory" : "curated-fallback",
       ...(retrievedMemory
@@ -169,7 +170,8 @@ export function runPivotProtocol(
             memoryExplanation: {
               memoryId: retrievedMemory.id,
               pivotTitle: retrievedMemory.selectedPivot.title,
-              outcome: retrievedMemory.pivotOutcome.kind
+              outcome: retrievedMemory.pivotOutcome.kind,
+              text: memoryExplanationText(retrievedMemory)
             }
           }
         : {})
@@ -179,6 +181,10 @@ export function runPivotProtocol(
       derivedMemory: false
     }
   };
+}
+
+function memoryExplanationText(retrievedMemory: RetrievedMemory): string {
+  return `A similar saved Check-in was followed by “${retrievedMemory.selectedPivot.title},” which you marked ${outcomeLabel(retrievedMemory.pivotOutcome.kind)}.`;
 }
 
 function outcomeLabel(outcome: "completed" | "partly-helpful"): string {

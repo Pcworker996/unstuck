@@ -56,6 +56,25 @@ describe("retrieveSimilarMemory", () => {
     expect(result.memory.similarity).toBeGreaterThan(0.3);
   });
 
+  it("does not retrieve a pattern after the person forgets it", () => {
+    expect(savedCheckIn).toBeDefined();
+    if (!savedCheckIn) {
+      throw new Error("Expected a saved Check-in.");
+    }
+
+    expect(
+      retrieveSimilarMemory({
+        accountId: "person-123",
+        checkIn: {
+          quickDump: "I cannot get going on this work assignment.",
+          emotionalState: 4
+        },
+        memories: [savedCheckIn],
+        forgottenMemoryIds: ["check-in-1"]
+      })
+    ).toEqual({ kind: "no-match" });
+  });
+
   it("returns no match for unrelated history", () => {
     expect(
       retrieveSimilarMemory({
@@ -156,8 +175,35 @@ describe("runPivotProtocol with retrieved memory", () => {
     expect(result.recommendation.memoryExplanation).toEqual({
       memoryId: "check-in-1",
       pivotTitle: "Make the next step visible",
-      outcome: "completed"
+      outcome: "completed",
+      text: "A similar saved Check-in was followed by “Make the next step visible,” which you marked completed."
     });
+  });
+
+  it("does not expose a forgotten pattern in a later recommendation", () => {
+    expect(savedCheckIn).toBeDefined();
+    if (!savedCheckIn) {
+      throw new Error("Expected a saved Check-in.");
+    }
+
+    const result = runPersonalizedPivotProtocol({
+      accountId: "person-123",
+      checkIn: {
+        quickDump: "I cannot get going on this work assignment.",
+        emotionalState: 4
+      },
+      consentGiven: true,
+      memories: [savedCheckIn],
+      forgottenMemoryIds: ["check-in-1"]
+    });
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol") {
+      throw new Error("Expected an ordinary Pivot protocol.");
+    }
+
+    expect(result.recommendation.source).toBe("curated-fallback");
+    expect(result.recommendation.memoryExplanation).toBeUndefined();
   });
 
   it("keeps a curated recommendation when retrieval is unavailable", () => {
