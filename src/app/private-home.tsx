@@ -26,6 +26,8 @@ import {
 } from "./check-in-memory";
 import { runPersonalizedPivotProtocol } from "./semantic-retrieval";
 import type { PersonalAccount } from "./private-home-state";
+import { deriveYourPatterns } from "./your-patterns";
+import { YourPatternsView } from "./your-patterns-view";
 
 const EMOTIONAL_STATE_RATINGS: readonly EmotionalState[] = [1, 2, 3, 4, 5];
 const OUTCOME_OPTIONS: readonly { kind: PivotOutcomeKind; label: string }[] = [
@@ -53,6 +55,7 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
   >("check-in");
   const [chosenPivot, setChosenPivot] = useState<Pivot>();
   const [completion, setCompletion] = useState<CheckInCompletion>();
+  const [pivotStartedAt, setPivotStartedAt] = useState<number>();
   const [savedCheckIns, setSavedCheckIns] = useState<SavedCheckIn[]>(() =>
     loadSavedCheckIns(person.id)
   );
@@ -80,6 +83,7 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
       return;
     }
 
+    const checkInStartedAt = Date.now();
     const nextProtocol = runPersonalizedPivotProtocol({
       accountId: person.id,
       checkIn,
@@ -94,6 +98,7 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
 
     setProtocol(nextProtocol);
     setRegenerationOffset(0);
+    setPivotStartedAt(checkInStartedAt);
     setFlowState("check-in");
   }
 
@@ -123,6 +128,8 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
       checkIn: protocol.checkIn,
       selectedPivot: chosenPivot,
       outcome,
+      pivotTimeSeconds:
+        pivotStartedAt === undefined ? undefined : (Date.now() - pivotStartedAt) / 1000,
       saveCheckIn
     });
 
@@ -142,6 +149,7 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
     setRegenerationOffset(0);
     setChosenPivot(undefined);
     setCompletion(undefined);
+    setPivotStartedAt(undefined);
     setConsentGiven(false);
     setConsentError(false);
     setSaveCheckIn(false);
@@ -302,6 +310,16 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
             Start another Check-in
           </button>
         </section>
+      ) : null}
+
+      {savedCheckIns.length > 0 ? (
+        <YourPatternsView
+          patterns={deriveYourPatterns({
+            accountId: person.id,
+            records: savedCheckIns,
+            forgottenMemoryIds
+          })}
+        />
       ) : null}
 
       {savedCheckIns.length > 0 ? (
@@ -552,7 +570,7 @@ function SavedHistory({
       <h2 id="history-heading">Saved Check-ins</h2>
       <ul>
         {records.map((record) => (
-          <li key={record.id}>
+          <li id={memoryAnchorId(record.id)} key={record.id}>
             <p>{record.privateEntry.quickDump}</p>
             <span>
               {record.selectedPivot.title} · {outcomeLabel(record.pivotOutcome.kind)}
@@ -591,6 +609,10 @@ function SavedHistory({
       </ul>
     </section>
   );
+}
+
+function memoryAnchorId(memoryId: string): string {
+  return `memory-${encodeURIComponent(memoryId)}`;
 }
 
 function outcomeLabel(kind: PivotOutcomeKind) {

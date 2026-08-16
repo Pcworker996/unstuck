@@ -427,6 +427,68 @@ textarea:focus-visible {
   padding: 1.5rem 0 2rem;
 }
 
+.patterns-card {
+  border-top: 1px solid #344137;
+  margin-top: 2rem;
+  padding: 1.5rem 0 0;
+}
+
+.patterns-card h2 {
+  font-size: 1.5rem;
+  letter-spacing: -0.04em;
+  margin-top: 0.6rem;
+}
+
+.patterns-card__description {
+  color: #b8c4ba;
+  line-height: 1.5;
+  margin-top: 0.75rem;
+}
+
+.patterns-group {
+  border-top: 1px solid #344137;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+}
+
+.patterns-group h3 {
+  color: #c8ecca;
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.patterns-group ul {
+  display: grid;
+  gap: 0.75rem;
+  list-style: none;
+  margin: 0.8rem 0 0;
+  padding: 0;
+}
+
+.patterns-group li {
+  border: 1px solid #344137;
+  border-radius: 0.55rem;
+  padding: 0.85rem;
+}
+
+.patterns-group li p {
+  color: #b8c4ba;
+  line-height: 1.4;
+  margin-top: 0.4rem;
+}
+
+.memory-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.65rem !important;
+}
+
+.memory-links a {
+  color: #c8ecca;
+  font-size: 0.85rem;
+}
+
 .history-card h2 {
   font-size: 1.5rem;
   letter-spacing: -0.04em;

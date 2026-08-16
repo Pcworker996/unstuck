@@ -21,6 +21,7 @@ export type SavedCheckIn = {
     selectedPivotKind: PivotKind;
     outcome: PivotOutcomeKind;
     updatedEmotionalState?: EmotionalState;
+    pivotTimeSeconds?: number;
     embedding: readonly number[];
   };
   selectedPivot: Pivot;
@@ -33,6 +34,7 @@ export type CompleteCheckInInput = {
   checkIn: CurrentCheckIn;
   selectedPivot: Pivot;
   outcome: PivotOutcome;
+  pivotTimeSeconds?: number;
   saveCheckIn: boolean;
 };
 
@@ -86,6 +88,7 @@ export function completeCheckIn({
   checkIn,
   selectedPivot,
   outcome,
+  pivotTimeSeconds,
   saveCheckIn
 }: CompleteCheckInInput): CheckInCompletion {
   if (!saveCheckIn) {
@@ -103,6 +106,9 @@ export function completeCheckIn({
         selectedPivotKind: selectedPivot.kind,
         outcome: outcome.kind,
         updatedEmotionalState: outcome.updatedEmotionalState,
+        ...(pivotTimeSeconds === undefined
+          ? {}
+          : { pivotTimeSeconds: normalizePivotTimeSeconds(pivotTimeSeconds) }),
         embedding: createEmbedding(
           derivedMemoryText({
             quickDump: checkIn.quickDump,
@@ -116,6 +122,14 @@ export function completeCheckIn({
       pivotOutcome: outcome
     }
   };
+}
+
+function normalizePivotTimeSeconds(pivotTimeSeconds: number): number {
+  if (!Number.isFinite(pivotTimeSeconds)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.round(pivotTimeSeconds));
 }
 
 const savedCheckInsStoragePrefix = "unstuck:saved-check-ins:";
