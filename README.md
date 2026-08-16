@@ -8,6 +8,10 @@ The initial application uses Amazon Cognito for Personal accounts and is designe
 
 For local setup and AWS deployment, see [the deployment guide](docs/deployment.md).
 
+For the staging-only CockroachDB Managed MCP workflow, schema migration, and
+user-scoped Semantic retrieval validation, see
+[the Managed MCP staging runbook](docs/managed-mcp-staging.md).
+
 ```sh
 npm install
 npm run dev
