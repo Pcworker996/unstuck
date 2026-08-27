@@ -143,4 +143,136 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(outcome.state.situationMap.pivotHistory).toHaveLength(1);
     expect(outcome.state.activity.at(-1)?.kind).toBe("outcome-recorded");
   });
+
+  it("keeps unresolved contradictions while a correction regenerates the map", async () => {
+    let generation = 0;
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        generation += 1;
+        return output({
+          ...situationMap,
+          contradictions: generation === 1
+            ? [{ id: "contradiction-1", text: "Two deadlines conflict.", provenance: "guide" }]
+            : []
+        });
+      }
+    };
+
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "The dates in my checklist do not agree.",
+      consentGiven: true
+    }, generator);
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const corrected = await runGooglePivotCommand(started.state, {
+      type: "correct-map",
+      section: "shared",
+      itemId: "shared-1",
+      text: "The dates in the lease and checklist conflict."
+    }, generator);
+    expect(corrected.kind).toBe("ok");
+    if (corrected.kind !== "ok") return;
+    expect(corrected.state.situationMap.contradictions).toHaveLength(1);
+  });
+
+  it("keeps the original provenance when a person corrects a guide interpretation", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I need to decide what to do next.",
+      consentGiven: true
+    });
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const corrected = await runGooglePivotCommand(started.state, {
+      type: "correct-map",
+      section: "interpretations",
+      itemId: "interpretation-1",
+      text: "That interpretation is not accurate for me."
+    });
+    expect(corrected.kind).toBe("ok");
+    if (corrected.kind !== "ok") return;
+    expect(corrected.state.situationMap.interpretations[0].provenance).toBe("guide");
+    expect(corrected.state.revisions[0].previousProvenance).toBe("guide");
+  });
+
+  it("regenerates through the generator using the current corrected map", async () => {
+    let calls = 0;
+    let seenText = "";
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        calls += 1;
+        seenText = situationMap.shared[0].text;
+        return {
+          ...output(situationMap),
+          primaryPivotKind: calls === 1 ? PIVOT_LIBRARY[0].kind : PIVOT_LIBRARY[3].kind,
+          alternativePivotKinds: calls === 1
+            ? [PIVOT_LIBRARY[1].kind, PIVOT_LIBRARY[2].kind]
+            : [PIVOT_LIBRARY[4].kind, PIVOT_LIBRARY[1].kind]
+        };
+      }
+    };
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck.",
+      consentGiven: true
+    }, generator);
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const regenerated = await runGooglePivotCommand(started.state, { type: "regenerate-pivot" }, generator);
+    expect(regenerated.kind).toBe("ok");
+    expect(seenText).toBe("I am stuck.");
+    if (regenerated.kind !== "ok") return;
+    expect(calls).toBe(2);
+    expect(regenerated.state.recommendation.primary.kind).toBe(PIVOT_LIBRARY[3].kind);
+    expect(regenerated.state.activity.at(-1)?.kind).toBe("recommendation-regenerated");
+  });
+
+  it("requires an explicit contradiction resolution before removing it", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "Two sources disagree.",
+      consentGiven: true
+    }, {
+      async generate({ situationMap }) {
+        return output({
+          ...situationMap,
+          contradictions: [{ id: "contradiction-1", text: "The sources disagree.", provenance: "guide" }]
+        });
+      }
+    });
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const resolved = await runGooglePivotCommand(started.state, {
+      type: "resolve-contradiction",
+      itemId: "contradiction-1"
+    });
+    expect(resolved.kind).toBe("ok");
+    if (resolved.kind !== "ok") return;
+    expect(resolved.state.situationMap.contradictions).toEqual([]);
+  });
+
+  it("surfaces a curated fallback when regeneration cannot complete", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck.",
+      consentGiven: true
+    });
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const regenerated = await runGooglePivotCommand(started.state, { type: "regenerate-pivot" }, {
+      async generate() {
+        throw new Error("generator unavailable");
+      }
+    });
+    expect(regenerated.kind).toBe("ok");
+    if (regenerated.kind !== "ok") return;
+    expect(regenerated.state.fallback).toBe(true);
+    expect(regenerated.state.activity.at(-1)?.kind).toBe("fallback");
+  });
 });

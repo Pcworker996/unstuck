@@ -16,6 +16,8 @@ describe("Google Pivot HTTP interface", () => {
         method: "POST",
         body: JSON.stringify({
           protocolId: "protocol-1",
+          expectedVersion: 0,
+          idempotencyKey: "legacy-start",
           quickDump: "I keep avoiding the first step of moving.",
           consentGiven: true
         })
@@ -40,6 +42,47 @@ describe("Google Pivot HTTP interface", () => {
     expect(response.status).toBe(401);
   });
 
+  it("requires an idempotency key for state-changing commands", async () => {
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          expectedVersion: 0,
+          quickDump: "I am stuck.",
+          consentGiven: true
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      createInMemoryGoogleProtocolRepository()
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ kind: "invalid-request" });
+  });
+
+  it("requires an explicit expected protocol version", async () => {
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          idempotencyKey: "version-1",
+          quickDump: "I am stuck.",
+          consentGiven: true
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      createInMemoryGoogleProtocolRepository()
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      kind: "invalid-request",
+      message: "An expected protocol version is required for state-changing commands."
+    });
+  });
+
   it("runs Safety before reading the private protocol", async () => {
     const repository = createInMemoryGoogleProtocolRepository();
     const guardedRepository = {
@@ -54,6 +97,8 @@ describe("Google Pivot HTTP interface", () => {
         method: "POST",
         body: JSON.stringify({
           protocolId: "missing",
+          expectedVersion: 0,
+          idempotencyKey: "safety-1",
           quickDump: "I am in immediate danger right now.",
           consentGiven: true
         })

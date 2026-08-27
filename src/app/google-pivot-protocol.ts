@@ -38,7 +38,7 @@ export type MapRevision = {
   previousText: string;
   previousProvenance: Provenance;
   text: string;
-  provenance: "person";
+  provenance: Provenance;
   editedBy: "person";
 };
 
@@ -57,6 +57,7 @@ export type ActivityEvent = {
     | "clarification-answer"
     | "clarification-skipped"
     | "map-revised"
+    | "contradiction-resolved"
     | "pivot-selected"
     | "recommendation-regenerated"
     | "pivot-dismissed"
@@ -223,6 +224,7 @@ export type GooglePivotCommand =
       itemId: string;
       text: string;
     }
+  | { type: "resolve-contradiction"; itemId: string }
   | { type: "select-pivot"; pivotKind: string }
   | { type: "regenerate-pivot" }
   | { type: "dismiss-pivot" }
@@ -262,6 +264,26 @@ export async function runGooglePivotCommand(
     return correctMap(current, command, generator);
   }
 
+  if (command.type === "resolve-contradiction") {
+    if (!current.situationMap.contradictions.some((item) => item.id === command.itemId)) {
+      return { kind: "invalid-command", message: "That contradiction no longer exists." };
+    }
+    return {
+      kind: "ok",
+      state: {
+        ...current,
+        situationMap: {
+          ...current.situationMap,
+          contradictions: current.situationMap.contradictions.filter((item) => item.id !== command.itemId)
+        },
+        activity: [...current.activity, {
+          kind: "contradiction-resolved",
+          message: "The person resolved a Situation-map contradiction."
+        }]
+      }
+    };
+  }
+
   if (command.type === "select-pivot") {
     if (current.phase !== "recommended" || !current.recommendation) {
       return { kind: "invalid-command", message: "A recommendation must be available first." };
@@ -285,27 +307,37 @@ export async function runGooglePivotCommand(
   }
 
   if (command.type === "regenerate-pivot") {
-    if (!current.recommendation) {
+    if (current.phase !== "recommended" || !current.recommendation) {
       return { kind: "invalid-command", message: "A recommendation must be available first." };
     }
-    const primaryIndex = PIVOT_LIBRARY.findIndex((pivot) => pivot.kind === current.recommendation.primary.kind);
-    const nextIndex = (primaryIndex + 1) % PIVOT_LIBRARY.length;
-    const primary = PIVOT_LIBRARY[nextIndex];
+    const generation = await generateValidatedOutput(
+      current.checkIn.quickDump,
+      current.situationMap,
+      generator,
+      current.clarification?.answers
+    );
+    const output = generation.output;
+    const generatedRecommendation = recommendationFromOutput(output);
+    const recommendation = generatedRecommendation.primary.kind === current.recommendation.primary.kind
+      ? rotatedRecommendation(generatedRecommendation)
+      : generatedRecommendation;
     return {
       kind: "ok",
       state: {
         ...current,
         phase: "recommended",
         selectedPivot: undefined,
-        recommendation: {
-          primary,
-          alternatives: [PIVOT_LIBRARY[(nextIndex + 1) % PIVOT_LIBRARY.length], PIVOT_LIBRARY[(nextIndex + 2) % PIVOT_LIBRARY.length]],
-          whyThisPivot: "This is a different bounded option to consider."
-        },
+        situationMap: preserveAcceptedMapItems(output.situationMap, current.situationMap, current.revisions),
+        recommendation,
+        outcome: undefined,
+        fallback: current.fallback || generation.fallback,
         activity: [...current.activity, {
           kind: "recommendation-regenerated",
           message: "A different bounded Pivot recommendation was generated."
-        }]
+        }, ...(generation.fallback ? [{
+          kind: "fallback" as const,
+          message: "Curated fallback preserved the accepted protocol state."
+        }] : [])]
       }
     };
   }
@@ -390,7 +422,8 @@ async function answerClarification(
         ]
       }
     : current.situationMap;
-  const output = await generateValidatedOutput(current.checkIn.quickDump, situationMap, generator, clarificationAnswers);
+  const generation = await generateValidatedOutput(current.checkIn.quickDump, situationMap, generator, clarificationAnswers);
+  const output = generation.output;
   const nextQuestion = clarificationAnswers.length < 2 ? output.clarificationQuestion : undefined;
   const event: ActivityEvent = {
     kind: skipped ? "clarification-skipped" : "clarification-answer",
@@ -401,13 +434,14 @@ async function answerClarification(
     state: {
       ...current,
       phase: nextQuestion ? "clarifying" : "recommended",
-      situationMap: preservePersonOwnedItems(output.situationMap, situationMap),
+      situationMap: preserveAcceptedMapItems(output.situationMap, situationMap, current.revisions),
       recommendation: recommendationFromOutput(output),
       clarification: {
         question: nextQuestion ?? current.clarification.question,
         answers: clarificationAnswers
       },
-      activity: [...current.activity, event, ...(nextQuestion ? [{ kind: "clarification-question" as const, message: "One clarification question is ready." }] : [{ kind: "generation" as const, message: "The recommendation was updated from the clarification." }])]
+      fallback: current.fallback || generation.fallback,
+      activity: [...current.activity, event, ...(nextQuestion ? [{ kind: "clarification-question" as const, message: "One clarification question is ready." }] : [{ kind: "generation" as const, message: "The recommendation was updated from the clarification." }]), ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
     }
   };
 }
@@ -429,35 +463,38 @@ async function correctMap(
   const situationMap = {
     ...current.situationMap,
     [command.section]: items.map((candidate) => candidate.id === command.itemId
-      ? { ...candidate, text, provenance: "person" as const }
+      ? { ...candidate, text }
       : candidate)
   };
-  const output = await generateValidatedOutput(current.checkIn.quickDump, situationMap, generator, current.clarification?.answers);
+  const generation = await generateValidatedOutput(current.checkIn.quickDump, situationMap, generator, current.clarification?.answers);
+  const output = generation.output;
+  const revision: MapRevision = {
+    section: command.section,
+    itemId: command.itemId,
+    previousText: item.text,
+    previousProvenance: item.provenance,
+    text,
+    provenance: item.provenance,
+    editedBy: "person"
+  };
   return {
     kind: "ok",
     state: {
       ...current,
       phase: "recommended",
-      situationMap: preservePersonOwnedItems(output.situationMap, situationMap),
+      situationMap: preserveAcceptedMapItems(output.situationMap, situationMap, [...current.revisions, revision]),
       recommendation: recommendationFromOutput(output),
       selectedPivot: undefined,
       outcome: undefined,
+      fallback: current.fallback || generation.fallback,
       revisions: [
         ...current.revisions,
-        {
-          section: command.section,
-          itemId: command.itemId,
-          previousText: item.text,
-          previousProvenance: item.provenance,
-          text,
-          provenance: "person",
-          editedBy: "person"
-        }
+        revision
       ],
       activity: [...current.activity, {
         kind: "map-revised",
         message: "The person corrected the Situation map; the recommendation was updated."
-      }]
+      }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
     }
   };
 }
@@ -467,23 +504,23 @@ async function generateValidatedOutput(
   situationMap: SituationMap,
   generator: GooglePivotGenerator,
   clarificationAnswers?: ClarificationAnswer[]
-): Promise<GooglePivotGeneratorOutput> {
+): Promise<{ output: GooglePivotGeneratorOutput; fallback: boolean }> {
   let generatedOutput: unknown;
   try {
     generatedOutput = await generator.generate({ quickDump, situationMap, clarificationAnswers });
     validateGeneratorOutput(generatedOutput);
-    return generatedOutput;
+    return { output: generatedOutput, fallback: false };
   } catch (error) {
     if (generator.repair) {
       try {
         const repairedOutput = await generator.repair({ quickDump, situationMap, invalidOutput: generatedOutput ?? error, clarificationAnswers });
         validateGeneratorOutput(repairedOutput);
-        return repairedOutput;
+        return { output: repairedOutput, fallback: false };
       } catch {
         // Fall through to the curated output so accepted state survives a platform failure.
       }
     }
-    return fallbackOutput(quickDump, situationMap);
+    return { output: fallbackOutput(quickDump, situationMap), fallback: true };
   }
 }
 
@@ -495,10 +532,14 @@ function recommendationFromOutput(output: GooglePivotGeneratorOutput) {
   };
 }
 
-function preservePersonOwnedItems(generated: SituationMap, accepted: SituationMap): SituationMap {
+function preserveAcceptedMapItems(generated: SituationMap, accepted: SituationMap, revisions: MapRevision[]): SituationMap {
   const preserved = { ...generated };
   for (const section of Object.keys(accepted) as Array<keyof SituationMap>) {
-    const acceptedItems = accepted[section].filter((item) => item.provenance === "person");
+    const acceptedItems = accepted[section].filter((item) =>
+      item.provenance === "person" ||
+      section === "contradictions" ||
+      revisions.some((revision) => revision.section === section && revision.itemId === item.id)
+    );
     if (acceptedItems.length === 0) continue;
     const generatedItems = preserved[section];
     const acceptedById = new Map(acceptedItems.map((item) => [item.id, item]));
@@ -508,6 +549,16 @@ function preservePersonOwnedItems(generated: SituationMap, accepted: SituationMa
     ];
   }
   return preserved;
+}
+
+function rotatedRecommendation(recommendation: ReturnType<typeof recommendationFromOutput>) {
+  const primaryIndex = PIVOT_LIBRARY.findIndex((pivot) => pivot.kind === recommendation.primary.kind);
+  const nextIndex = (primaryIndex + 1) % PIVOT_LIBRARY.length;
+  return {
+    primary: PIVOT_LIBRARY[nextIndex],
+    alternatives: [PIVOT_LIBRARY[(nextIndex + 1) % PIVOT_LIBRARY.length], PIVOT_LIBRARY[(nextIndex + 2) % PIVOT_LIBRARY.length]],
+    whyThisPivot: "This is a different bounded option to consider."
+  };
 }
 
 function createSituationMap(quickDump: string): SituationMap {

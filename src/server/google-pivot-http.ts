@@ -92,7 +92,10 @@ function parseInput(value: unknown, request: Request): {
     throw new HttpInputError("A protocol identifier is required.");
   }
   const headerVersion = request.headers.get("if-match")?.replace(/^"|"$/g, "");
-  const expectedVersion = body.expectedVersion ?? (headerVersion === undefined ? 0 : Number(headerVersion));
+  const expectedVersion = body.expectedVersion ?? (headerVersion === undefined ? undefined : Number(headerVersion));
+  if (expectedVersion === undefined) {
+    throw new HttpInputError("An expected protocol version is required for state-changing commands.");
+  }
   if (typeof expectedVersion !== "number" || !Number.isInteger(expectedVersion) || expectedVersion < 0) {
     throw new HttpInputError("An expected protocol version is required.");
   }
@@ -102,13 +105,16 @@ function parseInput(value: unknown, request: Request): {
   if (idempotencyKey !== undefined && (!idempotencyKey || idempotencyKey.length > 200)) {
     throw new HttpInputError("The idempotency key is invalid.");
   }
+  if (!idempotencyKey) {
+    throw new HttpInputError("An idempotency key is required for state-changing commands.");
+  }
 
   const command = parseCommand(body);
 
   return {
     protocolId: body.protocolId.trim(),
     expectedVersion,
-    idempotencyKey: idempotencyKey ?? crypto.randomUUID(),
+    idempotencyKey,
     command
   };
 }
@@ -140,6 +146,9 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
     case "correct-map":
       if (!isSituationMapSection(body.section) || typeof body.itemId !== "string" || typeof body.text !== "string") throw new HttpInputError("A Situation-map correction is invalid.");
       return { type, section: body.section, itemId: body.itemId.trim(), text: body.text };
+    case "resolve-contradiction":
+      if (typeof body.itemId !== "string" || !body.itemId.trim()) throw new HttpInputError("A contradiction identifier is required.");
+      return { type, itemId: body.itemId.trim() };
     case "select-pivot":
       if (typeof body.pivotKind !== "string") throw new HttpInputError("A Pivot selection is required.");
       return { type, pivotKind: body.pivotKind };

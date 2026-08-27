@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import { getFirebaseGoogleAuthClient } from "../lib/firebase-google-auth";
@@ -141,6 +141,7 @@ function GooglePivotWorkspace({
   const [consentGiven, setConsentGiven] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
+  const startIdempotencyKey = useRef<string | undefined>(undefined);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -153,13 +154,16 @@ function GooglePivotWorkspace({
         body: JSON.stringify({
           protocolId,
           expectedVersion: result?.kind === "pivot-protocol" ? result.version : protocolVersion,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: startIdempotencyKey.current ?? (startIdempotencyKey.current = crypto.randomUUID()),
           type: "start",
           quickDump,
           consentGiven
         })
       });
       onResult(next);
+      if (next.kind === "pivot-protocol" || next.kind === "safety-interruption") {
+        startIdempotencyKey.current = undefined;
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The Pivot Protocol is unavailable.");
     } finally {
@@ -240,11 +244,15 @@ function GooglePivotResultView({
   const [situationMap, setSituationMap] = useState(result.situationMap);
   const [error, setError] = useState<string>();
   const [savingItem, setSavingItem] = useState<string>();
+  const commandKeys = useRef(new Map<string, string>());
 
   useEffect(() => setSituationMap(result.situationMap), [result.situationMap]);
 
   async function command(body: Record<string, unknown>) {
     setError(undefined);
+    const signature = JSON.stringify(body);
+    const idempotencyKey = commandKeys.current.get(signature) ?? crypto.randomUUID();
+    commandKeys.current.set(signature, idempotencyKey);
     try {
       const next = await googleApiRequest<GooglePivotResult>("/api/google/pivot", {
         method: "POST",
@@ -252,11 +260,12 @@ function GooglePivotResultView({
         body: JSON.stringify({
           protocolId,
           expectedVersion: result.version,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey,
           ...body
         })
       });
       onResult(next);
+      commandKeys.current.delete(signature);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The Pivot Protocol is unavailable.");
     }
@@ -316,6 +325,7 @@ function GooglePivotResultView({
           <h2 id="google-pivot-heading">{result.recommendation.primary.title}</h2>
           <p>{result.recommendation.primary.instruction}</p>
           <p className="pivot-explanation">{result.recommendation.whyThisPivot}</p>
+          {result.fallback ? <p className="privacy-note">A curated fallback is keeping your accepted Situation map available.</p> : null}
           <div className="alternatives">
             <h3>Two other options</h3>
             {result.recommendation.alternatives.map((pivot) => <p key={pivot.id}>{pivot.title}</p>)}
@@ -331,19 +341,21 @@ function GooglePivotResultView({
           {result.outcome ? <p className="form-message">Recorded: {result.outcome.status}{result.outcome.agencyShift ? `, ${result.outcome.agencyShift}` : ""}.</p> : null}
         </section>
       ) : null}
-      <section className="situation-map" aria-labelledby="situation-map-heading">
-        <p className="eyebrow">Situation map</p>
-        <h2 id="situation-map-heading">What we have so far</h2>
+      <details className="situation-map" open>
+        <summary>
+          <p className="eyebrow">Situation map</p>
+          <h2 id="situation-map-heading">What we have so far</h2>
+        </summary>
         <SituationMapSection section="shared" title="You shared" items={situationMap.shared} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
         <SituationMapSection section="artifactClaims" title="Artifact claims" items={situationMap.artifactClaims} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
         <SituationMapSection section="interpretations" title="Guide interpretation" items={situationMap.interpretations} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
         <SituationMapSection section="uncertainties" title="Uncertainties" items={situationMap.uncertainties} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection section="contradictions" title="Contradictions to resolve" items={situationMap.contradictions} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection section="contradictions" title="Contradictions to resolve" items={situationMap.contradictions} onChange={updateMapItem} onSave={saveMapItem} onResolve={(itemId) => void command({ type: "resolve-contradiction", itemId })} savingItem={savingItem} />
         <SituationMapSection section="constraints" title="Constraints" items={situationMap.constraints} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
         <SituationMapSection section="progress" title="Immediate progress" items={situationMap.progress} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
         <SituationMapSection section="pivotHistory" title="Pivot history" items={situationMap.pivotHistory} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
         <SituationMapSection section="priorPatterns" title="Relevant prior patterns" items={situationMap.priorPatterns} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-      </section>
+      </details>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       <ActivityTrace events={result.activity} />
     </>
@@ -377,6 +389,7 @@ function SituationMapSection({
   items,
   onChange,
   onSave,
+  onResolve,
   savingItem
 }: {
   section: keyof SituationMap;
@@ -384,6 +397,7 @@ function SituationMapSection({
   items: { id: string; text: string; provenance: string }[];
   onChange: (section: keyof SituationMap, id: string, text: string) => void;
   onSave: (section: keyof SituationMap, id: string) => Promise<void>;
+  onResolve?: (id: string) => void;
   savingItem: string | undefined;
 }) {
   return (
@@ -397,6 +411,7 @@ function SituationMapSection({
           <button className="text-button" disabled={savingItem === item.id} onClick={() => void onSave(section, item.id)} type="button">
             {savingItem === item.id ? "Saving…" : "Save correction"}
           </button>
+          {onResolve ? <button className="text-button" onClick={() => onResolve(item.id)} type="button">Resolve contradiction</button> : null}
         </div>
       ))}
     </details>
