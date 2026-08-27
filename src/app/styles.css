@@ -146,6 +146,67 @@ button:disabled {
   padding: 4rem 0 2rem;
 }
 
+.google-pivot-workspace {
+  display: grid;
+  gap: 1.5rem;
+  padding-bottom: 2rem;
+}
+
+.google-pivot-workspace .check-in-card,
+.google-pivot-workspace .pivot-card,
+.google-pivot-workspace .pivot-result,
+.situation-map,
+.activity-trace {
+  align-self: auto;
+}
+
+.situation-map,
+.activity-trace {
+  border-top: 1px solid #344137;
+  padding-top: 1.5rem;
+}
+
+.situation-map h2,
+.activity-trace h2 {
+  font-size: 1.5rem;
+  letter-spacing: -0.04em;
+  margin-top: 0.6rem;
+}
+
+.situation-map__section {
+  border-top: 1px solid #344137;
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.situation-map__section h3 {
+  color: #c8ecca;
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.situation-map__section p,
+.activity-trace p {
+  color: #b8c4ba;
+  line-height: 1.45;
+  margin-top: 0.6rem;
+}
+
+.situation-map__item {
+  color: #b8c4ba;
+  font-weight: 400;
+  margin-top: 0.75rem;
+}
+
+.situation-map__item textarea {
+  margin-top: 0.2rem;
+}
+
+.activity-trace p {
+  border-left: 2px solid #526258;
+  padding-left: 0.75rem;
+}
+
 .eyebrow {
   color: #a9d5ac;
   font-size: 0.9rem;
