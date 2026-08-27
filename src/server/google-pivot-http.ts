@@ -201,6 +201,7 @@ function isSituationMapSection(value: unknown): value is keyof SituationMap {
 function isPivotOutcome(value: unknown): value is Extract<GooglePivotCommand, { type: "record-outcome" }>["outcome"] {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const outcome = value as Record<string, unknown>;
+  if (Object.keys(outcome).some((key) => !["status", "agencyShift", "pivotTimeSeconds"].includes(key))) return false;
   return ["completed", "partly-helpful", "not-a-fit", "skipped"].includes(outcome.status as string) &&
     (outcome.agencyShift === undefined || ["more-able", "about-as-able", "less-able"].includes(outcome.agencyShift as string)) &&
     (outcome.pivotTimeSeconds === undefined || typeof outcome.pivotTimeSeconds === "number");

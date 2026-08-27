@@ -69,10 +69,21 @@ export function createGenkitGooglePivotGenerator(): GooglePivotGenerator {
       }
       return response.output;
     },
-    async deriveMemory({ quickDump, situationMap, selectedPivot, outcome }) {
+    async prepareMemory({ situationMap }) {
       const response = await ai.generate({
         model,
-        prompt: memoryPromptFor({ quickDump, situationMap, selectedPivot, outcome }),
+        prompt: memoryPreparationPromptFor(situationMap),
+        output: { schema: z.string().max(500) }
+      });
+      if (!response.output) {
+        throw new Error("Gemini returned no pending Derived-memory context.");
+      }
+      return response.output;
+    },
+    async deriveMemory({ currentContext, selectedPivot, outcome }) {
+      const response = await ai.generate({
+        model,
+        prompt: memoryPromptFor({ currentContext, selectedPivot, outcome }),
         output: { schema: z.string().max(500) }
       });
       if (!response.output) {
@@ -84,8 +95,7 @@ export function createGenkitGooglePivotGenerator(): GooglePivotGenerator {
 }
 
 function memoryPromptFor(input: {
-  quickDump: string;
-  situationMap: SituationMap;
+  currentContext: string;
   selectedPivot: Pivot;
   outcome: PivotOutcome;
 }): string {
@@ -93,10 +103,18 @@ function memoryPromptFor(input: {
     "Create one compact factual Derived-memory context for the person who chose to save this Check-in.",
     "Use plain language, no diagnosis, prediction, emotional score, wellness score, or professional advice.",
     "Keep it under 500 characters. Mention the situation only as needed, the selected Pivot, and the reported outcome.",
-    `Private entry: ${input.quickDump}`,
-    `Situation map: ${JSON.stringify(input.situationMap)}`,
+    `Current Derived-memory context: ${input.currentContext}`,
     `Selected Pivot: ${input.selectedPivot.title} — ${input.selectedPivot.instruction}`,
     `Reported outcome: ${JSON.stringify(input.outcome)}`
+  ].join("\n\n");
+}
+
+function memoryPreparationPromptFor(situationMap: SituationMap): string {
+  return [
+    "Create one compact factual Derived-memory context for the person who chose to save this Check-in.",
+    "Use plain language, no diagnosis, prediction, emotional score, wellness score, or professional advice.",
+    "Keep it under 500 characters and use only the factual Situation-map context; do not invent details.",
+    `Situation map: ${JSON.stringify(situationMap)}`
   ].join("\n\n");
 }
 

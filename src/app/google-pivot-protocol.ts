@@ -97,9 +97,9 @@ export type GooglePivotGenerator = {
     invalidOutput: unknown;
     clarificationAnswers?: ClarificationAnswer[];
   }) => Promise<unknown>;
+  prepareMemory?: (input: { situationMap: SituationMap }) => Promise<string>;
   deriveMemory?: (input: {
-    quickDump: string;
-    situationMap: SituationMap;
+    currentContext: string;
     selectedPivot: Pivot;
     outcome: PivotOutcome;
   }) => Promise<string>;
@@ -130,6 +130,7 @@ export type GooglePivotResult =
       saveRequested: boolean;
       persistence: GooglePersistenceStatus;
       enrichment: GoogleEnrichmentStatus;
+      pendingDerivedContext?: string;
       derivedMemory?: GoogleDerivedMemory;
       recommendation?: {
         primary: Pivot;
@@ -222,6 +223,18 @@ export async function runGooglePivotProtocol(
     activity.push({ kind: "clarification-question", message: "One clarification question is ready." });
   }
 
+  let pendingDerivedContext: string | undefined;
+  if (input.saveRequested) {
+    try {
+      const context = await (generator.prepareMemory?.({ situationMap }) ?? Promise.resolve(defaultPendingMemory(situationMap)));
+      validateDerivedMemoryContext(context);
+      pendingDerivedContext = context;
+    } catch {
+      pendingDerivedContext = defaultPendingMemory(situationMap);
+      activity.push({ kind: "fallback", message: "A curated Derived-memory context is keeping the saved Check-in available." });
+    }
+  }
+
   return {
     kind: "pivot-protocol",
     checkIn: { quickDump },
@@ -229,6 +242,7 @@ export async function runGooglePivotProtocol(
     saveRequested: input.saveRequested ?? false,
     persistence: input.saveRequested ? "pending" : "unsaved",
     enrichment: "not-requested",
+    ...(pendingDerivedContext ? { pendingDerivedContext } : {}),
     phase: output.clarificationQuestion ? "clarifying" : "recommended",
     situationMap: output.situationMap,
     ...(output.clarificationQuestion
@@ -418,19 +432,20 @@ async function recordOutcome(
 
   if (!current.saveRequested) return { kind: "ok", state: baseState };
 
+  const fallbackContext = current.pendingDerivedContext ?? defaultPendingMemory(situationMap);
   try {
     const context = await (generator.deriveMemory?.({
-      quickDump: current.checkIn.quickDump,
-      situationMap,
+      currentContext: fallbackContext,
       selectedPivot,
       outcome
-    }) ?? Promise.resolve(defaultDerivedMemory(selectedPivot, outcome)));
+    }) ?? Promise.resolve(defaultDerivedMemory(situationMap, selectedPivot, outcome)));
     validateDerivedMemoryContext(context);
     return {
       kind: "ok",
       state: {
         ...baseState,
         enrichment: "saved",
+        pendingDerivedContext: undefined,
         derivedMemory: { id: "derived-memory-1", context, approved: true },
         activity: [...baseState.activity, {
           kind: "generation",
@@ -444,6 +459,8 @@ async function recordOutcome(
       state: {
         ...baseState,
         enrichment: "unavailable",
+        pendingDerivedContext: undefined,
+        derivedMemory: { id: "derived-memory-1", context: fallbackContext, approved: true },
         activity: [...baseState.activity, {
           kind: "fallback",
           message: "The outcome was saved, but adaptation is temporarily unavailable."
@@ -843,18 +860,30 @@ function preferredPivot(quickDump: string): Pivot {
   return PIVOT_LIBRARY[0];
 }
 
-function defaultDerivedMemory(pivot: Pivot, outcome: PivotOutcome): string {
-  return `${pivot.title} was ${outcome.status}${outcome.agencyShift ? `; agency felt ${outcome.agencyShift}` : ""}.`;
+function defaultPendingMemory(situationMap: SituationMap): string {
+  const mapContext = [...situationMap.progress, ...situationMap.constraints]
+    .map((item) => item.text.trim())
+    .filter(Boolean)
+    .join(" ");
+  return mapContext || "The person is working through a situation and chose to save this Check-in.";
+}
+
+function defaultDerivedMemory(situationMap: SituationMap, pivot: Pivot, outcome: PivotOutcome): string {
+  return `${defaultPendingMemory(situationMap)} ${pivot.title} was ${outcome.status}${outcome.agencyShift ? `; agency felt ${outcome.agencyShift}` : ""}.`;
 }
 
 function validateDerivedMemoryContext(context: string): void {
   if (typeof context !== "string" || !context.trim() || context.length > 500) {
     throw new Error("Derived memory context is invalid.");
   }
+  if (/\b(diagnos\w*|personality|predict\w*|crisis|suicid\w*|medical advice)\b/i.test(context)) {
+    throw new Error("Derived memory context contains disallowed content.");
+  }
 }
 
 function isValidPivotOutcome(outcome: unknown): outcome is PivotOutcome {
   if (!isRecord(outcome)) return false;
+  if (Object.keys(outcome).some((key) => !["status", "agencyShift", "pivotTimeSeconds"].includes(key))) return false;
   return ["completed", "partly-helpful", "not-a-fit", "skipped"].includes(outcome.status as string) &&
     (outcome.agencyShift === undefined || ["more-able", "about-as-able", "less-able"].includes(outcome.agencyShift as string));
 }

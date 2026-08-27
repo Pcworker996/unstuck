@@ -83,6 +83,26 @@ describe("Google Pivot HTTP interface", () => {
     });
   });
 
+  it("rejects numeric wellness fields in an outcome", async () => {
+    const response = await handleGooglePivotOutcomePost(
+      new Request("http://localhost/api/google/pivot/outcome", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          expectedVersion: 0,
+          idempotencyKey: "outcome-1",
+          type: "record-outcome",
+          outcome: { status: "completed", wellnessScore: 5 }
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      createInMemoryGoogleProtocolRepository()
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ kind: "invalid-request" });
+  });
+
   it("keeps outcome mutations on the dedicated outcome route", async () => {
     const request = new Request("http://localhost/api/google/pivot", {
       method: "POST",

@@ -223,7 +223,8 @@ describe("collaborative Google Pivot Protocol", () => {
       state: { phase: "outcome", persistence: "saved", enrichment: "unavailable", outcome: { status: "partly-helpful" } }
     });
     if (outcome.kind !== "ok") return;
-    expect(outcome.state.derivedMemory).toBeUndefined();
+    expect(outcome.state.derivedMemory).toMatchObject({ approved: true });
+    expect(outcome.state.derivedMemory?.context).toContain("Make one part of this situation clearer");
   });
 
   it("accepts every outcome and Agency-shift value without numeric wellness state", async () => {

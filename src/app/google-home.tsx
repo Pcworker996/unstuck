@@ -370,7 +370,7 @@ function GooglePivotResultView({
               <p>{result.persistence === "saved"
                 ? result.enrichment === "saved"
                   ? "Your selected Pivot, outcome, Situation map, and compact Derived memory are available in Saved Check-ins."
-                  : "Your selected Pivot, outcome, and Situation map are saved. Adaptation is temporarily unavailable, so no Derived memory was added."
+                  : "Your selected Pivot, outcome, Situation map, and the last approved Derived memory are saved. Adaptation is temporarily unavailable, so the memory was not updated."
                 : "Only this session shows the result; it will not become personal history."}</p>
               {result.derivedMemory ? <p><strong>Derived memory:</strong> {result.derivedMemory.context}</p> : null}
             </section>

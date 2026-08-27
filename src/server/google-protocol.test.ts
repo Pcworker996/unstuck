@@ -261,6 +261,13 @@ describe("Google Protocol", () => {
     await finishSavedProtocol("firebase-user-1", "protocol-1");
     await finishSavedProtocol("firebase-user-2", "protocol-2");
     await startGoogleProtocol({ subject: "firebase-user-1" }, dependencies);
+    await runGoogleProtocolCommand({
+      subject: "firebase-user-1",
+      protocolId: "protocol-3",
+      expectedVersion: 0,
+      idempotencyKey: "protocol-3-start",
+      command: { type: "start", quickDump: "Incomplete saved Check-in.", consentGiven: true, saveRequested: true }
+    }, { repository });
 
     await expect(listGoogleSavedProtocols({ subject: "firebase-user-1" }, { repository })).resolves.toMatchObject({
       kind: "protocols",
