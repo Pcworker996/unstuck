@@ -261,6 +261,20 @@ describe("collaborative Google Pivot Protocol", () => {
     }
   });
 
+  it("keeps a save-preparation failure non-persistent", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck.",
+      consentGiven: true,
+      saveRequested: true
+    }, {
+      async generate({ situationMap }) { return output(situationMap); },
+      async prepareMemory() { throw new Error("memory preparation unavailable"); }
+    });
+
+    expect(started).toMatchObject({ kind: "ok", state: { saveRequested: false, persistence: "unsaved" } });
+  });
+
   it("keeps unresolved contradictions while a correction regenerates the map", async () => {
     let generation = 0;
     const generator: GooglePivotGenerator = {

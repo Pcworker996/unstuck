@@ -78,6 +78,23 @@ export function GoogleHome() {
     setPerson(undefined);
   }
 
+  async function discardProtocol() {
+    if (!person || !protocol) return;
+    try {
+      await googleApiRequest(`/api/google/history/${encodeURIComponent(protocol.id)}`, { method: "DELETE" });
+      const created = await googleApiRequest<{ kind: "protocol"; protocol: Protocol }>(
+        "/api/google/protocol",
+        { method: "POST" }
+      );
+      window.sessionStorage.setItem(`unstuck.google.protocol.${person.id}`, created.protocol.id);
+      setProtocol(created.protocol);
+      setPivotResult(undefined);
+      setMessage("The incomplete Check-in was discarded.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The incomplete Check-in could not be discarded.");
+    }
+  }
+
   if (loading && !person) {
     return <main className="loading-screen">Loading your private workspace…</main>;
   }
@@ -120,6 +137,7 @@ export function GoogleHome() {
           protocolId={protocol.id}
           protocolVersion={protocol.version}
           result={pivotResult}
+          onDiscard={discardProtocol}
           onResult={(next) => {
             setPivotResult(next);
             if (next.kind === "pivot-protocol" && next.persistence === "saved") {
@@ -137,12 +155,14 @@ function GooglePivotWorkspace({
   protocolId,
   protocolVersion,
   result,
-  onResult
+  onResult,
+  onDiscard
 }: {
   protocolId: string;
   protocolVersion: number;
   result: GooglePivotResult | undefined;
   onResult: (result: GooglePivotResult) => void;
+  onDiscard: () => Promise<void>;
 }) {
   const [quickDump, setQuickDump] = useState("");
   const [consentGiven, setConsentGiven] = useState(false);
@@ -216,7 +236,7 @@ function GooglePivotWorkspace({
               onChange={(event) => setSaveRequested(event.target.checked)}
             />
             <span>
-              <strong>Save this Check-in after I record an outcome.</strong>
+              <strong>Save and approve this Check-in after I record an outcome.</strong>
               <small>This keeps the Private entry, Situation map, selected Pivot, outcome, and a compact Derived memory for you to inspect or delete.</small>
             </span>
           </label>
@@ -231,7 +251,7 @@ function GooglePivotWorkspace({
       ) : null}
       {result?.kind === "safety-interruption" ? <GoogleSafetyResult result={result} /> : null}
       {result?.kind === "pivot-protocol" ? (
-        <GooglePivotResultView protocolId={protocolId} result={result} onResult={onResult} />
+        <GooglePivotResultView protocolId={protocolId} result={result} onResult={onResult} onDiscard={onDiscard} />
       ) : null}
     </section>
   );
@@ -255,11 +275,13 @@ function GoogleSafetyResult({ result }: { result: Extract<GooglePivotResult, { k
 function GooglePivotResultView({
   protocolId,
   result,
-  onResult
+  onResult,
+  onDiscard
 }: {
   protocolId: string;
   result: Extract<GooglePivotResult, { kind: "pivot-protocol" }>;
   onResult: (result: GooglePivotResult) => void;
+  onDiscard: () => Promise<void>;
 }) {
   const [situationMap, setSituationMap] = useState(result.situationMap);
   const [error, setError] = useState<string>();
@@ -393,6 +415,9 @@ function GooglePivotResultView({
         <SituationMapSection editable={mapEditable} section="priorPatterns" title="Relevant prior patterns" items={situationMap.priorPatterns} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
       </details>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {result.phase !== "outcome" ? (
+        <button className="text-button" onClick={() => void onDiscard()} type="button">Discard this Check-in</button>
+      ) : null}
       <ActivityTrace events={result.activity} />
     </>
   );

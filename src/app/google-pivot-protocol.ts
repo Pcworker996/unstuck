@@ -223,15 +223,16 @@ export async function runGooglePivotProtocol(
     activity.push({ kind: "clarification-question", message: "One clarification question is ready." });
   }
 
+  let saveRequested = input.saveRequested ?? false;
   let pendingDerivedContext: string | undefined;
-  if (input.saveRequested) {
+  if (saveRequested) {
     try {
       const context = await (generator.prepareMemory?.({ situationMap }) ?? Promise.resolve(defaultPendingMemory(situationMap)));
       validateDerivedMemoryContext(context);
       pendingDerivedContext = context;
     } catch {
-      pendingDerivedContext = defaultPendingMemory(situationMap);
-      activity.push({ kind: "fallback", message: "A curated Derived-memory context is keeping the saved Check-in available." });
+      saveRequested = false;
+      activity.push({ kind: "fallback", message: "Saving is temporarily unavailable; this Check-in can continue without being retained." });
     }
   }
 
@@ -239,8 +240,8 @@ export async function runGooglePivotProtocol(
     kind: "pivot-protocol",
     checkIn: { quickDump },
     version: 0,
-    saveRequested: input.saveRequested ?? false,
-    persistence: input.saveRequested ? "pending" : "unsaved",
+    saveRequested,
+    persistence: saveRequested ? "pending" : "unsaved",
     enrichment: "not-requested",
     ...(pendingDerivedContext ? { pendingDerivedContext } : {}),
     phase: output.clarificationQuestion ? "clarifying" : "recommended",
