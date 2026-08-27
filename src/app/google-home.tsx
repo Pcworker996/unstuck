@@ -81,7 +81,7 @@ export function GoogleHome() {
   async function discardProtocol() {
     if (!person || !protocol) return;
     try {
-      await googleApiRequest(`/api/google/history/${encodeURIComponent(protocol.id)}`, { method: "DELETE" });
+      await deleteGoogleHistory(protocol.id);
       const created = await googleApiRequest<{ kind: "protocol"; protocol: Protocol }>(
         "/api/google/protocol",
         { method: "POST" }
@@ -453,7 +453,7 @@ function GoogleSavedHistory({ refreshKey }: { refreshKey: number }) {
   async function deleteHistory(protocolId: string) {
     if (!window.confirm("Delete this saved Check-in and its Derived memory?")) return;
     try {
-      await googleApiRequest(`/api/google/history/${encodeURIComponent(protocolId)}`, { method: "DELETE" });
+      await deleteGoogleHistory(protocolId);
       setHistories((current) => current.filter((history) => history.id !== protocolId));
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The saved Check-in could not be deleted.");
@@ -590,6 +590,10 @@ async function loadWorkspace(person: Person): Promise<Protocol> {
   );
   window.sessionStorage.setItem(storageKey, created.protocol.id);
   return created.protocol;
+}
+
+function deleteGoogleHistory(protocolId: string): Promise<unknown> {
+  return googleApiRequest(`/api/google/history/${encodeURIComponent(protocolId)}`, { method: "DELETE" });
 }
 
 export async function googleApiRequest<T>(
