@@ -16,3 +16,6 @@ npm-debug.log*
 .scratch/
 AGENTS.md
 CONTEXT.md
+docs/agents/
+docs/research/
+docs/specs/
