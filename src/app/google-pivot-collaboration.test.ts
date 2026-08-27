@@ -54,6 +54,7 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(answered.kind).toBe("ok");
     if (answered.kind !== "ok") return;
     expect(answered.state.phase).toBe("clarifying");
+    expect("recommendation" in answered.state).toBe(false);
     expect(answered.state.clarification?.question.id).toBe("question-2");
     expect(answered.state.clarification?.answers).toHaveLength(1);
 
@@ -288,7 +289,8 @@ describe("collaborative Google Pivot Protocol", () => {
         return output({
           ...situationMap,
           shared: [{ ...situationMap.shared[0], text: "The guide says I need to start." }],
-          constraints: [{ id: "constraint-1", text: "The guide invented this constraint.", provenance: "person" }]
+          constraints: [{ id: "constraint-1", text: "The guide invented this constraint.", provenance: "person" }],
+          artifactClaims: [{ id: "artifact-1", text: "An unapproved artifact claim.", provenance: "artifact" }]
         });
       }
     });
@@ -301,6 +303,36 @@ describe("collaborative Google Pivot Protocol", () => {
       provenance: "person"
     });
     expect(started.state.situationMap.constraints).toEqual([]);
+    expect(started.state.situationMap.artifactClaims).toEqual([]);
+  });
+
+  it("applies provenance protection to repaired generated output", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I need to start the lease checklist.",
+      consentGiven: true
+    }, {
+      async generate({ situationMap }) {
+        return {
+          ...output(situationMap),
+          primaryPivotKind: "not-a-pivot",
+          alternativePivotKinds: []
+        };
+      },
+      async repair({ situationMap }) {
+        return output({
+          ...situationMap,
+          shared: [{ ...situationMap.shared[0], text: "A repaired guide claim." }],
+          artifactClaims: [{ id: "artifact-1", text: "An unapproved repaired artifact claim.", provenance: "artifact" }]
+        });
+      }
+    });
+
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+    expect(started.state.fallback).toBe(true);
+    expect(started.state.situationMap.shared[0].text).toBe("I need to start the lease checklist.");
+    expect(started.state.situationMap.artifactClaims).toEqual([]);
   });
 
   it("does not allow map edits after a Pivot has been selected", async () => {

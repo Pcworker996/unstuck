@@ -189,8 +189,11 @@ export async function runGooglePivotProtocol(
           situationMap,
           invalidOutput: generatedOutput ?? error
         });
-        validateGeneratorOutput(repairedOutput);
-        output = repairedOutput;
+        validateGeneratorOutput(repairedOutput, situationMap);
+        output = {
+          ...repairedOutput,
+          situationMap: preserveAcceptedMapItems(repairedOutput.situationMap, situationMap, [])
+        };
         activity.push({ kind: "generation", message: "Bounded Pivot generation repaired once." });
       } catch {
         output = fallbackOutput(quickDump, situationMap);
@@ -275,9 +278,7 @@ export async function runGooglePivotCommand(
   }
 
   if (command.type === "resolve-contradiction") {
-    if (current.phase !== "clarifying" && current.phase !== "recommended") {
-      return { kind: "invalid-command", message: "Situation-map edits must happen before choosing a Pivot." };
-    }
+    if (!isSituationMapEditable(current.phase)) return mapEditPhaseError();
     if (!current.situationMap.contradictions.some((item) => item.id === command.itemId)) {
       return { kind: "invalid-command", message: "That contradiction no longer exists." };
     }
@@ -442,13 +443,19 @@ async function answerClarification(
     kind: skipped ? "clarification-skipped" : "clarification-answer",
     message: skipped ? "The person skipped the clarification question." : "The person answered the clarification question."
   };
+  const stateWithoutRecommendation = nextQuestion
+    ? (() => {
+        const { recommendation: _recommendation, ...rest } = current;
+        return rest;
+      })()
+    : current;
   return {
     kind: "ok",
     state: {
-      ...current,
+      ...stateWithoutRecommendation,
       phase: nextQuestion ? "clarifying" : "recommended",
       situationMap: preserveAcceptedMapItems(output.situationMap, situationMap, current.revisions),
-      recommendation: recommendationFromOutput(output),
+      ...(nextQuestion ? {} : { recommendation: recommendationFromOutput(output) }),
       clarification: {
         question: nextQuestion ?? current.clarification.question,
         answers: clarificationAnswers
@@ -468,9 +475,7 @@ async function correctMap(
   if (!text) {
     return { kind: "invalid-command", message: "A Situation-map correction cannot be empty." };
   }
-  if (current.phase !== "clarifying" && current.phase !== "recommended") {
-    return { kind: "invalid-command", message: "Situation-map edits must happen before choosing a Pivot." };
-  }
+  if (!isSituationMapEditable(current.phase)) return mapEditPhaseError();
   const items = current.situationMap[command.section];
   const item = items.find((candidate) => candidate.id === command.itemId);
   if (!item) {
@@ -565,6 +570,7 @@ function preserveAcceptedMapItems(generated: SituationMap, accepted: SituationMa
   for (const section of Object.keys(accepted) as Array<keyof SituationMap>) {
     const acceptedItems = accepted[section].filter((item) =>
       item.provenance === "person" ||
+      item.provenance === "artifact" ||
       section === "contradictions" ||
       revisions.some((revision) => revision.section === section && revision.itemId === item.id)
     );
@@ -577,6 +583,14 @@ function preserveAcceptedMapItems(generated: SituationMap, accepted: SituationMa
     ];
   }
   return preserved;
+}
+
+function isSituationMapEditable(phase: GooglePivotPhase): boolean {
+  return phase === "clarifying" || phase === "recommended";
+}
+
+function mapEditPhaseError(): Extract<GooglePivotCommandResult, { kind: "invalid-command" }> {
+  return { kind: "invalid-command", message: "Situation-map edits must happen before choosing a Pivot." };
 }
 
 function rotatedRecommendation(recommendation: ReturnType<typeof recommendationFromOutput>) {
@@ -670,8 +684,8 @@ function validateGeneratedProvenance(generated: SituationMap, accepted: Situatio
       if (acceptedItem && acceptedItem.provenance !== item.provenance) {
         throw new Error("Generated Situation-map provenance cannot change.");
       }
-      if (!acceptedItem && item.provenance === "person") {
-        throw new Error("Generated Situation-map output cannot create person-owned claims.");
+      if (!acceptedItem && (item.provenance === "person" || item.provenance === "artifact")) {
+        throw new Error("Generated Situation-map output cannot create unapproved claims.");
       }
     }
   }

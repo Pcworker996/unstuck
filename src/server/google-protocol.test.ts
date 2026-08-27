@@ -83,6 +83,35 @@ describe("Google Protocol", () => {
     expect(conflictingRetry).toMatchObject({ kind: "idempotency-conflict", protocol: { version: 1 } });
   });
 
+  it("replays legacy idempotency records that predate command fingerprints", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await repository.create({
+      id: "protocol-legacy",
+      ownerSubject: "firebase-user-1",
+      version: 1,
+      createdAt: "2026-08-26T12:00:00.000Z",
+      idempotency: {
+        "legacy-key": { version: 1, state: { value: "saved" } }
+      }
+    });
+
+    await expect(repository.findIdempotent({
+      protocolId: "protocol-legacy",
+      ownerSubject: "firebase-user-1",
+      idempotencyKey: "legacy-key",
+      fingerprint: "new-fingerprint"
+    })).resolves.toMatchObject({ kind: "match", protocol: { pivotState: { value: "saved" } } });
+
+    await expect(repository.saveState({
+      protocolId: "protocol-legacy",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 1,
+      idempotencyKey: "legacy-key",
+      fingerprint: "new-fingerprint",
+      state: { value: "different-retry" }
+    })).resolves.toMatchObject({ kind: "idempotent", protocol: { version: 1, pivotState: { value: "saved" } } });
+  });
+
   it("replays duplicate protocol commands through the application seam", async () => {
     const repository = createInMemoryGoogleProtocolRepository();
     const dependencies = {

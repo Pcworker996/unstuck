@@ -203,7 +203,7 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
       const record = protocol.idempotency?.[idempotencyKey];
       if (!record) return undefined;
       const result = { ...protocol, version: record.version, pivotState: record.state };
-      return record.fingerprint === fingerprint
+      return record.fingerprint === undefined || record.fingerprint === fingerprint
         ? { kind: "match", protocol: result }
         : { kind: "conflict", protocol: result };
     },
@@ -214,7 +214,7 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
       }
       const existingIdempotency = protocol.idempotency?.[idempotencyKey];
       if (existingIdempotency) {
-        if (existingIdempotency.fingerprint !== fingerprint) {
+        if (existingIdempotency.fingerprint !== undefined && existingIdempotency.fingerprint !== fingerprint) {
           return {
             kind: "idempotency-conflict",
             protocol: visibleProtocol(protocol)
