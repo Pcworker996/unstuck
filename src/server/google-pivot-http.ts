@@ -1,6 +1,5 @@
 import { FirebaseAuthenticationError } from "./firebase-auth";
 import {
-  runGooglePivotProtocol,
   type GooglePivotCommand,
   type GooglePivotGenerator,
   type SituationMap
@@ -18,19 +17,29 @@ export async function handleGooglePivotPost(
   repository: GoogleProtocolRepository,
   generator?: GooglePivotGenerator
 ): Promise<Response> {
+  return handleGooglePivotCommandPost(request, authenticate, repository, generator, "protocol");
+}
+
+export async function handleGooglePivotOutcomePost(
+  request: Request,
+  authenticate: Authenticate,
+  repository: GoogleProtocolRepository,
+  generator?: GooglePivotGenerator
+): Promise<Response> {
+  return handleGooglePivotCommandPost(request, authenticate, repository, generator, "outcome");
+}
+
+async function handleGooglePivotCommandPost(
+  request: Request,
+  authenticate: Authenticate,
+  repository: GoogleProtocolRepository,
+  generator: GooglePivotGenerator | undefined,
+  route: "protocol" | "outcome"
+): Promise<Response> {
   try {
     const identity = await authenticate(request);
     const body = await readJson(request);
-    const input = parseInput(body, request);
-    if (input.command.type === "start") {
-      const safetyResult = await runGooglePivotProtocol({
-        quickDump: input.command.quickDump,
-        consentGiven: false
-      });
-      if (safetyResult.kind === "safety-interruption") {
-        return json(safetyResult, 200);
-      }
-    }
+    const input = parseInput(body, request, route);
     const result = await runGoogleProtocolCommand(
       {
         subject: identity.subject,
@@ -61,6 +70,13 @@ export async function handleGooglePivotPost(
         protocol: result.protocol
       }, 409);
     }
+    if (result.kind === "idempotency-conflict") {
+      return json({
+        kind: "idempotency-conflict",
+        message: "This idempotency key was already used for a different command.",
+        protocol: result.protocol
+      }, 409);
+    }
     return json(result, 400);
   } catch (error) {
     if (error instanceof FirebaseAuthenticationError) {
@@ -78,7 +94,7 @@ export async function handleGooglePivotPost(
   }
 }
 
-function parseInput(value: unknown, request: Request): {
+function parseInput(value: unknown, request: Request, route: "protocol" | "outcome"): {
   protocolId: string;
   expectedVersion: number;
   idempotencyKey: string;
@@ -110,6 +126,12 @@ function parseInput(value: unknown, request: Request): {
   }
 
   const command = parseCommand(body);
+  if (route === "outcome" && command.type !== "record-outcome") {
+    throw new HttpInputError("Only outcome commands are accepted on this route.");
+  }
+  if (route === "protocol" && command.type === "record-outcome") {
+    throw new HttpInputError("Outcome commands must use the dedicated outcome route.");
+  }
 
   return {
     protocolId: body.protocolId.trim(),
@@ -122,10 +144,7 @@ function parseInput(value: unknown, request: Request): {
 function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
   const type = body.type;
   if (type === undefined) {
-    if (typeof body.quickDump !== "string" || !body.quickDump.trim() || body.quickDump.length > 10_000 || typeof body.consentGiven !== "boolean") {
-      throw new HttpInputError("A Quick dump and processing consent are required.");
-    }
-    return { type: "start", quickDump: body.quickDump.trim(), consentGiven: body.consentGiven };
+    return parseStartCommand(body);
   }
 
   if (typeof type !== "string") {
@@ -133,10 +152,7 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
   }
   switch (type) {
     case "start":
-      if (typeof body.quickDump !== "string" || !body.quickDump.trim() || body.quickDump.length > 10_000 || typeof body.consentGiven !== "boolean") {
-        throw new HttpInputError("A Quick dump and processing consent are required.");
-      }
-      return { type, quickDump: body.quickDump.trim(), consentGiven: body.consentGiven };
+      return parseStartCommand(body);
     case "answer-clarification":
       if (typeof body.questionId !== "string" || typeof body.answer !== "string") throw new HttpInputError("A clarification question and answer are required.");
       return { type, questionId: body.questionId.trim(), answer: body.answer };
@@ -161,6 +177,13 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
     default:
       throw new HttpInputError("The Pivot Protocol command is invalid.");
   }
+}
+
+function parseStartCommand(body: Record<string, unknown>): Extract<GooglePivotCommand, { type: "start" }> {
+  if (typeof body.quickDump !== "string" || !body.quickDump.trim() || body.quickDump.length > 10_000 || typeof body.consentGiven !== "boolean") {
+    throw new HttpInputError("A Quick dump and processing consent are required.");
+  }
+  return { type: "start", quickDump: body.quickDump.trim(), consentGiven: body.consentGiven };
 }
 
 function isSituationMapSection(value: unknown): value is keyof SituationMap {

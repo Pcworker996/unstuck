@@ -3,7 +3,8 @@ import {
   type GooglePivotCommand,
   type GooglePivotCommandResult,
   type GooglePivotGenerator,
-  type GooglePivotResult
+  type GooglePivotResult,
+  googlePivotSafetyResult
 } from "../app/google-pivot-protocol";
 
 export type GoogleProtocol = {
@@ -15,14 +16,18 @@ export type GoogleProtocol = {
 
 type StoredGoogleProtocol = GoogleProtocol & {
   ownerSubject: string;
-  pivotState?: unknown;
-  idempotency?: Record<string, { version: number; state: unknown }>;
+  idempotency?: Record<string, { version: number; state: unknown; fingerprint?: string }>;
 };
+
+type IdempotencyLookup =
+  | { kind: "match"; protocol: StoredGoogleProtocol }
+  | { kind: "conflict"; protocol: StoredGoogleProtocol };
 
 export type GoogleProtocolMutation =
   | { kind: "saved"; protocol: GoogleProtocol }
   | { kind: "conflict"; protocol: GoogleProtocol }
-  | { kind: "idempotent"; protocol: GoogleProtocol };
+  | { kind: "idempotent"; protocol: GoogleProtocol }
+  | { kind: "idempotency-conflict"; protocol: GoogleProtocol };
 
 export type GoogleProtocolRepository = {
   create: (protocol: StoredGoogleProtocol) => Promise<void>;
@@ -36,13 +41,15 @@ export type GoogleProtocolRepository = {
     ownerSubject: string;
     expectedVersion: number;
     idempotencyKey: string;
+    fingerprint: string;
     state: unknown;
   }) => Promise<GoogleProtocolMutation>;
   findIdempotent: (input: {
     protocolId: string;
     ownerSubject: string;
     idempotencyKey: string;
-  }) => Promise<StoredGoogleProtocol | undefined>;
+    fingerprint: string;
+  }) => Promise<IdempotencyLookup | undefined>;
 };
 
 export type GoogleProtocolDependencies = {
@@ -59,6 +66,7 @@ export type GoogleProtocolCommandResult =
   | { kind: "state"; state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>; replayed: boolean }
   | { kind: "not-found" }
   | { kind: "conflict"; protocol: GoogleProtocol }
+  | { kind: "idempotency-conflict"; protocol: GoogleProtocol }
   | { kind: "consent-required" }
   | { kind: "safety-interruption"; result: Extract<GooglePivotResult, { kind: "safety-interruption" }> }
   | { kind: "invalid-command"; message: string };
@@ -114,6 +122,11 @@ export async function runGoogleProtocolCommand(
   dependencies: Pick<GoogleProtocolDependencies, "repository">,
   generator?: GooglePivotGenerator
 ): Promise<GoogleProtocolCommandResult> {
+  if (input.command.type === "start") {
+    const safetyResult = googlePivotSafetyResult(input.command.quickDump);
+    if (safetyResult) return { kind: "safety-interruption", result: safetyResult };
+  }
+
   const existing = await dependencies.repository.findByIdForOwner({
     protocolId: input.protocolId,
     ownerSubject: input.subject
@@ -125,10 +138,14 @@ export async function runGoogleProtocolCommand(
   const replay = await dependencies.repository.findIdempotent({
     protocolId: input.protocolId,
     ownerSubject: input.subject,
-    idempotencyKey: input.idempotencyKey
+    idempotencyKey: input.idempotencyKey,
+    fingerprint: commandFingerprint(input.command)
   });
-  if (replay?.pivotState && isPivotState(replay.pivotState)) {
-    return { kind: "state", state: replay.pivotState, replayed: true };
+  if (replay?.kind === "conflict") {
+    return { kind: "idempotency-conflict", protocol: visibleProtocol(replay.protocol) };
+  }
+  if (replay?.kind === "match" && replay.protocol.pivotState && isPivotState(replay.protocol.pivotState)) {
+    return { kind: "state", state: replay.protocol.pivotState, replayed: true };
   }
 
   if (existing.version !== input.expectedVersion) {
@@ -149,6 +166,7 @@ export async function runGoogleProtocolCommand(
     ownerSubject: input.subject,
     expectedVersion: input.expectedVersion,
     idempotencyKey: input.idempotencyKey,
+    fingerprint: commandFingerprint(input.command),
     state: nextState
   });
   if (saved.kind === "conflict") {
@@ -156,6 +174,9 @@ export async function runGoogleProtocolCommand(
   }
   if (saved.kind === "idempotent" && saved.protocol.pivotState && isPivotState(saved.protocol.pivotState)) {
     return { kind: "state", state: saved.protocol.pivotState, replayed: true };
+  }
+  if (saved.kind === "idempotency-conflict") {
+    return { kind: "idempotency-conflict", protocol: saved.protocol };
   }
   return { kind: "state", state: nextState, replayed: false };
 }
@@ -174,21 +195,31 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
       const protocol = protocols.get(protocolId);
       return protocol?.ownerSubject === ownerSubject ? protocol : undefined;
     },
-    async findIdempotent({ protocolId, ownerSubject, idempotencyKey }) {
+    async findIdempotent({ protocolId, ownerSubject, idempotencyKey, fingerprint }) {
       const protocol = protocols.get(protocolId);
-      if (!protocol || protocol.ownerSubject !== ownerSubject || !protocol.idempotency?.[idempotencyKey]) {
+      if (!protocol || protocol.ownerSubject !== ownerSubject) {
         return undefined;
       }
-      const record = protocol.idempotency[idempotencyKey];
-      return { ...protocol, version: record.version, pivotState: record.state };
+      const record = protocol.idempotency?.[idempotencyKey];
+      if (!record) return undefined;
+      const result = { ...protocol, version: record.version, pivotState: record.state };
+      return record.fingerprint === fingerprint
+        ? { kind: "match", protocol: result }
+        : { kind: "conflict", protocol: result };
     },
-    async saveState({ protocolId, ownerSubject, expectedVersion, idempotencyKey, state }) {
+    async saveState({ protocolId, ownerSubject, expectedVersion, idempotencyKey, fingerprint, state }) {
       const protocol = protocols.get(protocolId);
       if (!protocol || protocol.ownerSubject !== ownerSubject) {
         throw new Error("Protocol not found for owner.");
       }
       const existingIdempotency = protocol.idempotency?.[idempotencyKey];
       if (existingIdempotency) {
+        if (existingIdempotency.fingerprint !== fingerprint) {
+          return {
+            kind: "idempotency-conflict",
+            protocol: visibleProtocol(protocol)
+          };
+        }
         return {
           kind: "idempotent",
           protocol: visibleProtocol({
@@ -207,13 +238,17 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
         pivotState: state,
         idempotency: {
           ...protocol.idempotency,
-          [idempotencyKey]: { version: protocol.version + 1, state }
+          [idempotencyKey]: { version: protocol.version + 1, state, fingerprint }
         }
       };
       protocols.set(protocolId, next);
       return { kind: "saved", protocol: visibleProtocol(next) };
     }
   };
+}
+
+function commandFingerprint(command: GooglePivotCommand): string {
+  return JSON.stringify(command);
 }
 
 function visibleProtocol(protocol: StoredGoogleProtocol): GoogleProtocol {
@@ -233,7 +268,6 @@ function isPivotState(value: unknown): value is Extract<GooglePivotResult, { kin
     value.kind === "pivot-protocol" &&
     "version" in value &&
     typeof value.version === "number" &&
-    "situationMap" in value &&
-    "recommendation" in value
+    "situationMap" in value
   );
 }

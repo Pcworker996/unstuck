@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FirebaseAuthenticationError } from "./firebase-auth";
-import { handleGooglePivotPost } from "./google-pivot-http";
+import { handleGooglePivotOutcomePost, handleGooglePivotPost } from "./google-pivot-http";
 import { createInMemoryGoogleProtocolRepository, startGoogleProtocol } from "./google-protocol";
 
 describe("Google Pivot HTTP interface", () => {
@@ -81,6 +81,45 @@ describe("Google Pivot HTTP interface", () => {
       kind: "invalid-request",
       message: "An expected protocol version is required for state-changing commands."
     });
+  });
+
+  it("keeps outcome mutations on the dedicated outcome route", async () => {
+    const request = new Request("http://localhost/api/google/pivot", {
+      method: "POST",
+      body: JSON.stringify({
+        protocolId: "protocol-1",
+        expectedVersion: 0,
+        idempotencyKey: "outcome-1",
+        type: "record-outcome",
+        outcome: { status: "completed" }
+      })
+    });
+
+    const response = await handleGooglePivotPost(
+      request,
+      async () => ({ subject: "firebase-user-1" }),
+      createInMemoryGoogleProtocolRepository()
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ kind: "invalid-request" });
+
+    const dedicatedResponse = await handleGooglePivotOutcomePost(
+      new Request("http://localhost/api/google/pivot/outcome", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          expectedVersion: 0,
+          idempotencyKey: "outcome-1",
+          type: "record-outcome",
+          outcome: { status: "completed" }
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      createInMemoryGoogleProtocolRepository()
+    );
+
+    expect(dedicatedResponse.status).toBe(404);
   });
 
   it("runs Safety before reading the private protocol", async () => {

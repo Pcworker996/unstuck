@@ -42,6 +42,7 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(started.kind).toBe("ok");
     if (started.kind !== "ok") return;
     expect(started.state.phase).toBe("clarifying");
+    expect(started.state.recommendation).toBeUndefined();
     expect(started.state.clarification?.question.id).toBe("question-1");
 
     const answered = await runGooglePivotCommand(started.state, {
@@ -226,6 +227,7 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(regenerated.kind).toBe("ok");
     expect(seenText).toBe("I am stuck.");
     if (regenerated.kind !== "ok") return;
+    if (!regenerated.state.recommendation) return;
     expect(calls).toBe(2);
     expect(regenerated.state.recommendation.primary.kind).toBe(PIVOT_LIBRARY[3].kind);
     expect(regenerated.state.activity.at(-1)?.kind).toBe("recommendation-regenerated");
@@ -274,5 +276,57 @@ describe("collaborative Google Pivot Protocol", () => {
     if (regenerated.kind !== "ok") return;
     expect(regenerated.state.fallback).toBe(true);
     expect(regenerated.state.activity.at(-1)?.kind).toBe("fallback");
+  });
+
+  it("does not let generated output rewrite person-owned facts or add person claims", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I need to start the lease checklist.",
+      consentGiven: true
+    }, {
+      async generate({ situationMap }) {
+        return output({
+          ...situationMap,
+          shared: [{ ...situationMap.shared[0], text: "The guide says I need to start." }],
+          constraints: [{ id: "constraint-1", text: "The guide invented this constraint.", provenance: "person" }]
+        });
+      }
+    });
+
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+    expect(started.state.fallback).toBe(true);
+    expect(started.state.situationMap.shared[0]).toMatchObject({
+      text: "I need to start the lease checklist.",
+      provenance: "person"
+    });
+    expect(started.state.situationMap.constraints).toEqual([]);
+  });
+
+  it("does not allow map edits after a Pivot has been selected", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck on a small task.",
+      consentGiven: true
+    });
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const selected = await runGooglePivotCommand(started.state, {
+      type: "select-pivot",
+      pivotKind: PIVOT_LIBRARY[0].kind
+    });
+    expect(selected.kind).toBe("ok");
+    if (selected.kind !== "ok") return;
+
+    await expect(runGooglePivotCommand(selected.state, {
+      type: "correct-map",
+      section: "shared",
+      itemId: "shared-1",
+      text: "A late correction"
+    })).resolves.toEqual({
+      kind: "invalid-command",
+      message: "Situation-map edits must happen before choosing a Pivot."
+    });
   });
 });

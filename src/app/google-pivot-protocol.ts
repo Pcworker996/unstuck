@@ -112,7 +112,7 @@ export type GooglePivotResult =
       revisions: MapRevision[];
       selectedPivot?: Pivot;
       outcome?: PivotOutcome;
-      recommendation: {
+      recommendation?: {
         primary: Pivot;
         alternatives: Pivot[];
         whyThisPivot: string;
@@ -121,27 +121,34 @@ export type GooglePivotResult =
       fallback: boolean;
     };
 
+export function googlePivotSafetyResult(
+  quickDump: string
+): Extract<GooglePivotResult, { kind: "safety-interruption" }> | undefined {
+  const normalizedQuickDump = quickDump.trim();
+  if (!indicatesImmediateDanger(normalizedQuickDump)) return undefined;
+  return {
+    kind: "safety-interruption",
+    checkIn: { quickDump: normalizedQuickDump },
+    activity: [
+      {
+        kind: "safety-completed",
+        message: "Safety gate completed; normal Pivot processing was interrupted."
+      },
+      {
+        kind: "fallback",
+        message: "Safety interruption returned app-owned urgent-support guidance."
+      }
+    ]
+  };
+}
+
 export async function runGooglePivotProtocol(
   input: { quickDump: string; consentGiven: boolean },
   generator: GooglePivotGenerator = defaultGenerator
 ): Promise<GooglePivotResult> {
   const quickDump = input.quickDump.trim();
-  if (indicatesImmediateDanger(quickDump)) {
-    return {
-      kind: "safety-interruption",
-      checkIn: { quickDump },
-      activity: [
-        {
-          kind: "safety-completed",
-          message: "Safety gate completed; normal Pivot processing was interrupted."
-        },
-        {
-          kind: "fallback",
-          message: "Safety interruption returned app-owned urgent-support guidance."
-        }
-      ]
-    };
-  }
+  const safetyResult = googlePivotSafetyResult(quickDump);
+  if (safetyResult) return safetyResult;
 
   if (!input.consentGiven) {
     return { kind: "consent-required" };
@@ -160,8 +167,11 @@ export async function runGooglePivotProtocol(
   try {
     generatedOutput = await generator.generate({ quickDump, situationMap });
     activity.push({ kind: "generation", message: "Bounded Pivot generation completed." });
-    validateGeneratorOutput(generatedOutput);
-    output = generatedOutput;
+    validateGeneratorOutput(generatedOutput, situationMap);
+    output = {
+      ...generatedOutput,
+      situationMap: preserveAcceptedMapItems(generatedOutput.situationMap, situationMap, [])
+    };
   } catch (error) {
     if (generatedOutput !== undefined) {
       activity.push({
@@ -208,7 +218,7 @@ export async function runGooglePivotProtocol(
       ? { clarification: { question: output.clarificationQuestion, answers: [] } }
       : {}),
     revisions: [],
-    recommendation: recommendationFromOutput(output),
+    ...(output.clarificationQuestion ? {} : { recommendation: recommendationFromOutput(output) }),
     activity,
     fallback
   };
@@ -265,6 +275,9 @@ export async function runGooglePivotCommand(
   }
 
   if (command.type === "resolve-contradiction") {
+    if (current.phase !== "clarifying" && current.phase !== "recommended") {
+      return { kind: "invalid-command", message: "Situation-map edits must happen before choosing a Pivot." };
+    }
     if (!current.situationMap.contradictions.some((item) => item.id === command.itemId)) {
       return { kind: "invalid-command", message: "That contradiction no longer exists." };
     }
@@ -455,6 +468,9 @@ async function correctMap(
   if (!text) {
     return { kind: "invalid-command", message: "A Situation-map correction cannot be empty." };
   }
+  if (current.phase !== "clarifying" && current.phase !== "recommended") {
+    return { kind: "invalid-command", message: "Situation-map edits must happen before choosing a Pivot." };
+  }
   const items = current.situationMap[command.section];
   const item = items.find((candidate) => candidate.id === command.itemId);
   if (!item) {
@@ -508,14 +524,26 @@ async function generateValidatedOutput(
   let generatedOutput: unknown;
   try {
     generatedOutput = await generator.generate({ quickDump, situationMap, clarificationAnswers });
-    validateGeneratorOutput(generatedOutput);
-    return { output: generatedOutput, fallback: false };
+    validateGeneratorOutput(generatedOutput, situationMap);
+    return {
+      output: {
+        ...generatedOutput,
+        situationMap: preserveAcceptedMapItems(generatedOutput.situationMap, situationMap, [])
+      },
+      fallback: false
+    };
   } catch (error) {
     if (generator.repair) {
       try {
         const repairedOutput = await generator.repair({ quickDump, situationMap, invalidOutput: generatedOutput ?? error, clarificationAnswers });
-        validateGeneratorOutput(repairedOutput);
-        return { output: repairedOutput, fallback: false };
+        validateGeneratorOutput(repairedOutput, situationMap);
+        return {
+          output: {
+            ...repairedOutput,
+            situationMap: preserveAcceptedMapItems(repairedOutput.situationMap, situationMap, [])
+          },
+          fallback: false
+        };
       } catch {
         // Fall through to the curated output so accepted state survives a platform failure.
       }
@@ -589,7 +617,8 @@ function createSituationMapItem(id: string, text: string, provenance: Provenance
 }
 
 function validateGeneratorOutput(
-  output: unknown
+  output: unknown,
+  acceptedSituationMap?: SituationMap
 ): asserts output is GooglePivotGeneratorOutput {
   if (
     !isRecord(output) ||
@@ -625,6 +654,24 @@ function validateGeneratorOutput(
     for (const mapItem of section) {
       if (!mapItem.text.trim() || !isProvenance(mapItem.provenance)) {
         throw new Error("Generated Situation-map provenance is invalid.");
+      }
+    }
+  }
+  if (acceptedSituationMap) {
+    validateGeneratedProvenance(output.situationMap, acceptedSituationMap);
+  }
+}
+
+function validateGeneratedProvenance(generated: SituationMap, accepted: SituationMap): void {
+  for (const section of Object.keys(generated) as Array<keyof SituationMap>) {
+    const acceptedById = new Map(accepted[section].map((item) => [item.id, item]));
+    for (const item of generated[section]) {
+      const acceptedItem = acceptedById.get(item.id);
+      if (acceptedItem && acceptedItem.provenance !== item.provenance) {
+        throw new Error("Generated Situation-map provenance cannot change.");
+      }
+      if (!acceptedItem && item.provenance === "person") {
+        throw new Error("Generated Situation-map output cannot create person-owned claims.");
       }
     }
   }

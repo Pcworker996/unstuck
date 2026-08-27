@@ -46,6 +46,7 @@ describe("Google Protocol", () => {
       ownerSubject: "firebase-user-1",
       expectedVersion: 0,
       idempotencyKey: "edit-1",
+      fingerprint: "first-command",
       state: { value: "first" }
     });
     expect(first.kind).toBe("saved");
@@ -56,6 +57,7 @@ describe("Google Protocol", () => {
       ownerSubject: "firebase-user-1",
       expectedVersion: 0,
       idempotencyKey: "edit-2",
+      fingerprint: "stale-command",
       state: { value: "stale" }
     });
     expect(stale).toMatchObject({ kind: "conflict", protocol: { version: 1 } });
@@ -65,9 +67,20 @@ describe("Google Protocol", () => {
       ownerSubject: "firebase-user-1",
       expectedVersion: 0,
       idempotencyKey: "edit-1",
+      fingerprint: "first-command",
       state: { value: "different-retry" }
     });
     expect(replay).toMatchObject({ kind: "idempotent", protocol: { version: 1, pivotState: { value: "first" } } });
+
+    const conflictingRetry = await repository.saveState({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 0,
+      idempotencyKey: "edit-1",
+      fingerprint: "different-command",
+      state: { value: "conflicting-retry" }
+    });
+    expect(conflictingRetry).toMatchObject({ kind: "idempotency-conflict", protocol: { version: 1 } });
   });
 
   it("replays duplicate protocol commands through the application seam", async () => {

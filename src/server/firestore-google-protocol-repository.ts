@@ -58,7 +58,7 @@ export function createFirestoreGoogleProtocolRepository(
         pivotState: value.pivotState
       };
     },
-    async findIdempotent({ protocolId, ownerSubject, idempotencyKey }) {
+    async findIdempotent({ protocolId, ownerSubject, idempotencyKey, fingerprint }) {
       const snapshot = await protocolDocument(firestore, ownerSubject, protocolId).get();
       if (!snapshot.exists) {
         return undefined;
@@ -68,15 +68,18 @@ export function createFirestoreGoogleProtocolRepository(
         return undefined;
       }
       const record = value.idempotency[idempotencyKey];
-      return {
+      const protocol = {
         id: protocolId,
         ownerSubject,
         version: record.version,
         createdAt: value.createdAt,
         pivotState: record.state
       };
+      return record.fingerprint === fingerprint
+        ? { kind: "match" as const, protocol }
+        : { kind: "conflict" as const, protocol };
     },
-    async saveState({ protocolId, ownerSubject, expectedVersion, idempotencyKey, state }) {
+    async saveState({ protocolId, ownerSubject, expectedVersion, idempotencyKey, fingerprint, state }) {
       const reference = protocolDocument(firestore, ownerSubject, protocolId);
       return firestore.runTransaction(async (transaction) => {
         const snapshot = await transaction.get(reference);
@@ -97,6 +100,9 @@ export function createFirestoreGoogleProtocolRepository(
           pivotState: value.pivotState
         };
         if (isIdempotencyRecord(existingIdempotency)) {
+          if (existingIdempotency.fingerprint !== fingerprint) {
+            return { kind: "idempotency-conflict" as const, protocol: current };
+          }
           return {
             kind: "idempotent" as const,
             protocol: {
@@ -111,17 +117,18 @@ export function createFirestoreGoogleProtocolRepository(
         }
 
         const nextVersion = value.version + 1;
+        const persistedState = withoutUndefined(state);
         transaction.set(reference, {
           version: nextVersion,
-          pivotState: state,
+          pivotState: persistedState,
           idempotency: {
             ...(value.idempotency ?? {}),
-            [idempotencyKey]: { version: nextVersion, state }
+            [idempotencyKey]: { version: nextVersion, state: persistedState, fingerprint }
           }
         }, { merge: true });
         return {
           kind: "saved" as const,
-          protocol: { ...current, version: nextVersion, pivotState: state }
+          protocol: { ...current, version: nextVersion, pivotState: persistedState }
         };
       });
     }
@@ -154,12 +161,22 @@ function isStoredProtocol(value: unknown): value is {
   );
 }
 
-function isIdempotencyRecord(value: unknown): value is { version: number; state: unknown } {
+function isIdempotencyRecord(value: unknown): value is { version: number; state: unknown; fingerprint?: string } {
   return (
     typeof value === "object" &&
     value !== null &&
     "version" in value &&
     typeof value.version === "number" &&
     "state" in value
+  );
+}
+
+function withoutUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutUndefined);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .map(([key, entry]) => [key, withoutUndefined(entry)])
   );
 }

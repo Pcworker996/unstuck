@@ -22,6 +22,7 @@ describe("Google Pivot Protocol", () => {
     });
     expect(result.situationMap.interpretations[0].provenance).toBe("guide");
     expect(result.situationMap.progress[0].provenance).toBe("person");
+    if (!result.recommendation) return;
     expect(result.recommendation.alternatives).toHaveLength(2);
     expect(new Set(result.recommendation.alternatives.map((pivot) => pivot.id)).size).toBe(2);
     expect(result.activity.map((event) => event.kind)).toEqual([

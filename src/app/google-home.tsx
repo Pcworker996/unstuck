@@ -248,13 +248,17 @@ function GooglePivotResultView({
 
   useEffect(() => setSituationMap(result.situationMap), [result.situationMap]);
 
+  const recommendation = result.recommendation;
+  const mapEditable = result.phase === "clarifying" || result.phase === "recommended";
+
   async function command(body: Record<string, unknown>) {
     setError(undefined);
     const signature = JSON.stringify(body);
     const idempotencyKey = commandKeys.current.get(signature) ?? crypto.randomUUID();
     commandKeys.current.set(signature, idempotencyKey);
     try {
-      const next = await googleApiRequest<GooglePivotResult>("/api/google/pivot", {
+      const endpoint = body.type === "record-outcome" ? "/api/google/pivot/outcome" : "/api/google/pivot";
+      const next = await googleApiRequest<GooglePivotResult>(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -319,20 +323,20 @@ function GooglePivotResultView({
           <p className="privacy-note">Question {result.clarification.answers.length + 1} of 2. You can continue without answering.</p>
         </section>
       ) : null}
-      {result.phase !== "clarifying" && result.phase !== "dismissed" ? (
+      {result.phase !== "clarifying" && result.phase !== "dismissed" && recommendation ? (
         <section className="pivot-card" aria-labelledby="google-pivot-heading">
           <p className="eyebrow">{result.phase === "outcome" ? "Pivot outcome" : "Recommended Pivot"}</p>
-          <h2 id="google-pivot-heading">{result.recommendation.primary.title}</h2>
-          <p>{result.recommendation.primary.instruction}</p>
-          <p className="pivot-explanation">{result.recommendation.whyThisPivot}</p>
+          <h2 id="google-pivot-heading">{recommendation.primary.title}</h2>
+          <p>{recommendation.primary.instruction}</p>
+          <p className="pivot-explanation">{recommendation.whyThisPivot}</p>
           {result.fallback ? <p className="privacy-note">A curated fallback is keeping your accepted Situation map available.</p> : null}
           <div className="alternatives">
             <h3>Two other options</h3>
-            {result.recommendation.alternatives.map((pivot) => <p key={pivot.id}>{pivot.title}</p>)}
+            {recommendation.alternatives.map((pivot) => <p key={pivot.id}>{pivot.title}</p>)}
           </div>
           {result.phase === "recommended" ? (
             <div className="button-row">
-              <button onClick={() => void command({ type: "select-pivot", pivotKind: result.recommendation.primary.kind })} type="button">Choose this Pivot</button>
+              <button onClick={() => void command({ type: "select-pivot", pivotKind: recommendation.primary.kind })} type="button">Choose this Pivot</button>
               <button className="quiet-button" onClick={() => void command({ type: "regenerate-pivot" })} type="button">Show another</button>
               <button className="text-button" onClick={() => void command({ type: "dismiss-pivot" })} type="button">Dismiss</button>
             </div>
@@ -346,15 +350,15 @@ function GooglePivotResultView({
           <p className="eyebrow">Situation map</p>
           <h2 id="situation-map-heading">What we have so far</h2>
         </summary>
-        <SituationMapSection section="shared" title="You shared" items={situationMap.shared} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection section="artifactClaims" title="Artifact claims" items={situationMap.artifactClaims} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection section="interpretations" title="Guide interpretation" items={situationMap.interpretations} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection section="uncertainties" title="Uncertainties" items={situationMap.uncertainties} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection section="contradictions" title="Contradictions to resolve" items={situationMap.contradictions} onChange={updateMapItem} onSave={saveMapItem} onResolve={(itemId) => void command({ type: "resolve-contradiction", itemId })} savingItem={savingItem} />
-        <SituationMapSection section="constraints" title="Constraints" items={situationMap.constraints} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection section="progress" title="Immediate progress" items={situationMap.progress} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection section="pivotHistory" title="Pivot history" items={situationMap.pivotHistory} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection section="priorPatterns" title="Relevant prior patterns" items={situationMap.priorPatterns} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="shared" title="You shared" items={situationMap.shared} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="artifactClaims" title="Artifact claims" items={situationMap.artifactClaims} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="interpretations" title="Guide interpretation" items={situationMap.interpretations} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="uncertainties" title="Uncertainties" items={situationMap.uncertainties} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="contradictions" title="Contradictions to resolve" items={situationMap.contradictions} onChange={updateMapItem} onSave={saveMapItem} onResolve={(itemId) => void command({ type: "resolve-contradiction", itemId })} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="constraints" title="Constraints" items={situationMap.constraints} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="progress" title="Immediate progress" items={situationMap.progress} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="pivotHistory" title="Pivot history" items={situationMap.pivotHistory} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="priorPatterns" title="Relevant prior patterns" items={situationMap.priorPatterns} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
       </details>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       <ActivityTrace events={result.activity} />
@@ -384,6 +388,7 @@ function OutcomeControls({ onSubmit }: { onSubmit: (outcome: { status: "complete
 }
 
 function SituationMapSection({
+  editable,
   section,
   title,
   items,
@@ -392,6 +397,7 @@ function SituationMapSection({
   onResolve,
   savingItem
 }: {
+  editable: boolean;
   section: keyof SituationMap;
   title: string;
   items: { id: string; text: string; provenance: string }[];
@@ -407,11 +413,11 @@ function SituationMapSection({
       {items.map((item) => (
         <div key={item.id} className="situation-map__item">
           <span><strong>{item.provenance}:</strong></span>
-          <textarea value={item.text} onChange={(event) => onChange(section, item.id, event.target.value)} rows={2} />
-          <button className="text-button" disabled={savingItem === item.id} onClick={() => void onSave(section, item.id)} type="button">
+          {editable ? <textarea value={item.text} onChange={(event) => onChange(section, item.id, event.target.value)} rows={2} /> : <p>{item.text}</p>}
+          {editable ? <button className="text-button" disabled={savingItem === item.id} onClick={() => void onSave(section, item.id)} type="button">
             {savingItem === item.id ? "Saving…" : "Save correction"}
-          </button>
-          {onResolve ? <button className="text-button" onClick={() => onResolve(item.id)} type="button">Resolve contradiction</button> : null}
+          </button> : null}
+          {editable && onResolve ? <button className="text-button" onClick={() => onResolve(item.id)} type="button">Resolve contradiction</button> : null}
         </div>
       ))}
     </details>

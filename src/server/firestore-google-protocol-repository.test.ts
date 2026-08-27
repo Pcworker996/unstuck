@@ -36,6 +36,7 @@ describe("Firestore Google Protocol repository", () => {
       ownerSubject: "firebase-user-1",
       expectedVersion: 0,
       idempotencyKey: "command-1",
+      fingerprint: "saved-command",
       state: { value: "saved" }
     })).resolves.toMatchObject({ kind: "saved", protocol: { version: 1 } });
 
@@ -44,6 +45,7 @@ describe("Firestore Google Protocol repository", () => {
       ownerSubject: "firebase-user-1",
       expectedVersion: 0,
       idempotencyKey: "command-2",
+      fingerprint: "stale-command",
       state: { value: "stale" }
     })).resolves.toMatchObject({ kind: "conflict", protocol: { version: 1 } });
 
@@ -52,8 +54,35 @@ describe("Firestore Google Protocol repository", () => {
       ownerSubject: "firebase-user-1",
       expectedVersion: 0,
       idempotencyKey: "command-1",
+      fingerprint: "saved-command",
       state: { value: "retry" }
     })).resolves.toMatchObject({ kind: "idempotent", protocol: { version: 1, pivotState: { value: "saved" } } });
+  });
+
+  it("removes undefined fields before persisting a protocol state", async () => {
+    const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
+    await repository.create({
+      id: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      version: 0,
+      createdAt: "2026-08-26T12:00:00.000Z"
+    });
+
+    await repository.saveState({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 0,
+      idempotencyKey: "command-1",
+      fingerprint: "nested-command",
+      state: { selectedPivot: undefined, nested: { outcome: undefined, value: "kept" } }
+    });
+
+    await expect(repository.findByIdForOwner({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1"
+    })).resolves.toMatchObject({
+      pivotState: { nested: { value: "kept" } }
+    });
   });
 });
 
