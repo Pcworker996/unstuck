@@ -13,3 +13,6 @@ credentials*.json
 firebase-debug.log*
 npm-debug.log*
 .DS_Store
+.scratch/
+AGENTS.md
+CONTEXT.md
