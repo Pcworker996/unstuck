@@ -183,7 +183,15 @@ function parseStartCommand(body: Record<string, unknown>): Extract<GooglePivotCo
   if (typeof body.quickDump !== "string" || !body.quickDump.trim() || body.quickDump.length > 10_000 || typeof body.consentGiven !== "boolean") {
     throw new HttpInputError("A Quick dump and processing consent are required.");
   }
-  return { type: "start", quickDump: body.quickDump.trim(), consentGiven: body.consentGiven };
+  if (body.saveRequested !== undefined && typeof body.saveRequested !== "boolean") {
+    throw new HttpInputError("The save choice must be yes or no.");
+  }
+  return {
+    type: "start",
+    quickDump: body.quickDump.trim(),
+    consentGiven: body.consentGiven,
+    saveRequested: body.saveRequested ?? false
+  };
 }
 
 function isSituationMapSection(value: unknown): value is keyof SituationMap {

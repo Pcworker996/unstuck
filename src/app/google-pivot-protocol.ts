@@ -48,6 +48,15 @@ export type PivotOutcome = {
   pivotTimeSeconds?: number;
 };
 
+export type GoogleDerivedMemory = {
+  id: string;
+  context: string;
+  approved: true;
+};
+
+export type GooglePersistenceStatus = "unsaved" | "pending" | "saved";
+export type GoogleEnrichmentStatus = "not-requested" | "saved" | "unavailable";
+
 export type ActivityEvent = {
   kind:
     | "safety-completed"
@@ -88,6 +97,12 @@ export type GooglePivotGenerator = {
     invalidOutput: unknown;
     clarificationAnswers?: ClarificationAnswer[];
   }) => Promise<unknown>;
+  deriveMemory?: (input: {
+    quickDump: string;
+    situationMap: SituationMap;
+    selectedPivot: Pivot;
+    outcome: PivotOutcome;
+  }) => Promise<string>;
 };
 
 export type GooglePivotPhase = "clarifying" | "recommended" | "selected" | "outcome" | "dismissed";
@@ -112,6 +127,10 @@ export type GooglePivotResult =
       revisions: MapRevision[];
       selectedPivot?: Pivot;
       outcome?: PivotOutcome;
+      saveRequested: boolean;
+      persistence: GooglePersistenceStatus;
+      enrichment: GoogleEnrichmentStatus;
+      derivedMemory?: GoogleDerivedMemory;
       recommendation?: {
         primary: Pivot;
         alternatives: Pivot[];
@@ -143,7 +162,7 @@ export function googlePivotSafetyResult(
 }
 
 export async function runGooglePivotProtocol(
-  input: { quickDump: string; consentGiven: boolean },
+  input: { quickDump: string; consentGiven: boolean; saveRequested?: boolean },
   generator: GooglePivotGenerator = defaultGenerator
 ): Promise<GooglePivotResult> {
   const quickDump = input.quickDump.trim();
@@ -207,6 +226,9 @@ export async function runGooglePivotProtocol(
     kind: "pivot-protocol",
     checkIn: { quickDump },
     version: 0,
+    saveRequested: input.saveRequested ?? false,
+    persistence: input.saveRequested ? "pending" : "unsaved",
+    enrichment: "not-requested",
     phase: output.clarificationQuestion ? "clarifying" : "recommended",
     situationMap: output.situationMap,
     ...(output.clarificationQuestion
@@ -220,7 +242,7 @@ export async function runGooglePivotProtocol(
 }
 
 export type GooglePivotCommand =
-  | { type: "start"; quickDump: string; consentGiven: boolean }
+  | { type: "start"; quickDump: string; consentGiven: boolean; saveRequested?: boolean }
   | { type: "answer-clarification"; questionId: string; answer: string }
   | { type: "skip-clarification"; questionId: string }
   | {
@@ -353,33 +375,82 @@ export async function runGooglePivotCommand(
   if (current.phase !== "selected" || !current.selectedPivot) {
     return { kind: "invalid-command", message: "Select a Pivot before recording its outcome." };
   }
+  if (!isValidPivotOutcome(command.outcome)) {
+    return { kind: "invalid-command", message: "The Pivot outcome is invalid." };
+  }
   if (command.outcome.pivotTimeSeconds !== undefined &&
       (!Number.isInteger(command.outcome.pivotTimeSeconds) || command.outcome.pivotTimeSeconds < 0)) {
     return { kind: "invalid-command", message: "Pivot time must be a non-negative whole number of seconds." };
   }
-  return {
-    kind: "ok",
-    state: {
-      ...current,
-      phase: "outcome",
-      outcome: command.outcome,
-      situationMap: {
-        ...current.situationMap,
-        pivotHistory: [
-          ...current.situationMap.pivotHistory,
-          createSituationMapItem(
-            `pivot-history-${current.situationMap.pivotHistory.length + 1}`,
-            `${current.selectedPivot.title}: ${command.outcome.status}.`,
-            "person"
-          )
-        ]
-      },
-      activity: [...current.activity, {
-        kind: "outcome-recorded",
-        message: "The person recorded what happened after the Pivot."
-      }]
-    }
+  return recordOutcome(current, current.selectedPivot, command.outcome, generator);
+}
+
+async function recordOutcome(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  selectedPivot: Pivot,
+  outcome: PivotOutcome,
+  generator: GooglePivotGenerator
+): Promise<GooglePivotCommandResult> {
+  const situationMap = {
+    ...current.situationMap,
+    pivotHistory: [
+      ...current.situationMap.pivotHistory,
+      createSituationMapItem(
+        `pivot-history-${current.situationMap.pivotHistory.length + 1}`,
+        `${selectedPivot.title}: ${outcome.status}.`,
+        "person"
+      )
+    ]
   };
+  const baseState = {
+    ...current,
+    phase: "outcome" as const,
+    outcome,
+    situationMap,
+    persistence: current.saveRequested ? "saved" as const : "unsaved" as const,
+    enrichment: "not-requested" as const,
+    derivedMemory: undefined,
+    activity: [...current.activity, {
+      kind: "outcome-recorded" as const,
+      message: "The person recorded what happened after the Pivot."
+    }]
+  };
+
+  if (!current.saveRequested) return { kind: "ok", state: baseState };
+
+  try {
+    const context = await (generator.deriveMemory?.({
+      quickDump: current.checkIn.quickDump,
+      situationMap,
+      selectedPivot,
+      outcome
+    }) ?? Promise.resolve(defaultDerivedMemory(selectedPivot, outcome)));
+    validateDerivedMemoryContext(context);
+    return {
+      kind: "ok",
+      state: {
+        ...baseState,
+        enrichment: "saved",
+        derivedMemory: { id: "derived-memory-1", context, approved: true },
+        activity: [...baseState.activity, {
+          kind: "generation",
+          message: "A compact Derived memory was prepared from the saved Check-in."
+        }]
+      }
+    };
+  } catch {
+    return {
+      kind: "ok",
+      state: {
+        ...baseState,
+        enrichment: "unavailable",
+        activity: [...baseState.activity, {
+          kind: "fallback",
+          message: "The outcome was saved, but adaptation is temporarily unavailable."
+        }]
+      }
+    };
+  }
 }
 
 async function answerClarification(
@@ -770,6 +841,22 @@ function preferredPivot(quickDump: string): Pivot {
   if (/(hungry|thirsty|tired|sleep|food|cold|hot|comfortable)/.test(text)) return PIVOT_LIBRARY[3];
   if (/(racing|panic|anxious|breathe|breath|overwhelmed|too much)/.test(text)) return PIVOT_LIBRARY[1];
   return PIVOT_LIBRARY[0];
+}
+
+function defaultDerivedMemory(pivot: Pivot, outcome: PivotOutcome): string {
+  return `${pivot.title} was ${outcome.status}${outcome.agencyShift ? `; agency felt ${outcome.agencyShift}` : ""}.`;
+}
+
+function validateDerivedMemoryContext(context: string): void {
+  if (typeof context !== "string" || !context.trim() || context.length > 500) {
+    throw new Error("Derived memory context is invalid.");
+  }
+}
+
+function isValidPivotOutcome(outcome: unknown): outcome is PivotOutcome {
+  if (!isRecord(outcome)) return false;
+  return ["completed", "partly-helpful", "not-a-fit", "skipped"].includes(outcome.status as string) &&
+    (outcome.agencyShift === undefined || ["more-able", "about-as-able", "less-able"].includes(outcome.agencyShift as string));
 }
 
 const defaultGenerator: GooglePivotGenerator = {

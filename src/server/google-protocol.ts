@@ -36,6 +36,8 @@ export type GoogleProtocolRepository = {
     protocolId: string;
     ownerSubject: string;
   }) => Promise<StoredGoogleProtocol | undefined>;
+  listSavedForOwner: (ownerSubject: string) => Promise<StoredGoogleProtocol[]>;
+  delete: (input: { protocolId: string; ownerSubject: string }) => Promise<boolean>;
   saveState: (input: {
     protocolId: string;
     ownerSubject: string;
@@ -109,6 +111,25 @@ export async function findFirstGoogleProtocol(
   return storedProtocol
     ? { kind: "protocol", protocol: visibleProtocol(storedProtocol) }
     : { kind: "not-found" };
+}
+
+export async function listGoogleSavedProtocols(
+  input: { subject: string },
+  dependencies: Pick<GoogleProtocolDependencies, "repository">
+): Promise<{ kind: "protocols"; protocols: GoogleProtocol[] }> {
+  const protocols = await dependencies.repository.listSavedForOwner(input.subject);
+  return { kind: "protocols", protocols: protocols.map(visibleProtocol) };
+}
+
+export async function deleteGoogleSavedProtocol(
+  input: { subject: string; protocolId: string },
+  dependencies: Pick<GoogleProtocolDependencies, "repository">
+): Promise<{ kind: "deleted"; protocolId: string } | { kind: "not-found" }> {
+  const deleted = await dependencies.repository.delete({
+    protocolId: input.protocolId,
+    ownerSubject: input.subject
+  });
+  return deleted ? { kind: "deleted", protocolId: input.protocolId } : { kind: "not-found" };
 }
 
 export async function runGoogleProtocolCommand(
@@ -194,6 +215,19 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
     async findByIdForOwner({ protocolId, ownerSubject }) {
       const protocol = protocols.get(protocolId);
       return protocol?.ownerSubject === ownerSubject ? protocol : undefined;
+    },
+    async listSavedForOwner(ownerSubject) {
+      return [...protocols.values()].filter((protocol) =>
+        protocol.ownerSubject === ownerSubject &&
+        isPivotState(protocol.pivotState) &&
+        protocol.pivotState.persistence === "saved"
+      );
+    },
+    async delete({ protocolId, ownerSubject }) {
+      const protocol = protocols.get(protocolId);
+      if (!protocol || protocol.ownerSubject !== ownerSubject) return false;
+      protocols.delete(protocolId);
+      return true;
     },
     async findIdempotent({ protocolId, ownerSubject, idempotencyKey, fingerprint }) {
       const protocol = protocols.get(protocolId);

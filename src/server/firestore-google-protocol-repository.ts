@@ -1,6 +1,7 @@
 import type { Firestore } from "firebase-admin/firestore";
 
 import type { GoogleProtocolRepository } from "./google-protocol";
+import { type GooglePivotResult } from "../app/google-pivot-protocol";
 
 const ACCOUNTS_COLLECTION = "personalAccounts";
 const PROTOCOLS_COLLECTION = "protocols";
@@ -57,6 +58,31 @@ export function createFirestoreGoogleProtocolRepository(
         createdAt: value.createdAt,
         pivotState: value.pivotState
       };
+    },
+    async listSavedForOwner(ownerSubject) {
+      const snapshot = await firestore
+        .collection(ACCOUNTS_COLLECTION)
+        .doc(ownerSubject)
+        .collection(PROTOCOLS_COLLECTION)
+        .get();
+      return snapshot.docs.flatMap((document) => {
+        const value = document.data();
+        if (!isStoredProtocol(value) || !isSavedPivotState(value.pivotState)) return [];
+        return [{
+          id: document.id,
+          ownerSubject,
+          version: value.version,
+          createdAt: value.createdAt,
+          pivotState: value.pivotState
+        }];
+      });
+    },
+    async delete({ protocolId, ownerSubject }) {
+      const reference = protocolDocument(firestore, ownerSubject, protocolId);
+      const snapshot = await reference.get();
+      if (!snapshot.exists) return false;
+      await reference.delete();
+      return true;
     },
     async findIdempotent({ protocolId, ownerSubject, idempotencyKey, fingerprint }) {
       const snapshot = await protocolDocument(firestore, ownerSubject, protocolId).get();
@@ -168,6 +194,17 @@ function isIdempotencyRecord(value: unknown): value is { version: number; state:
     "version" in value &&
     typeof value.version === "number" &&
     "state" in value
+  );
+}
+
+function isSavedPivotState(value: unknown): value is Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "pivot-protocol" &&
+    "persistence" in value &&
+    value.persistence === "saved"
   );
 }
 

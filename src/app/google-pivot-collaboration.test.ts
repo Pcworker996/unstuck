@@ -146,6 +146,120 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(outcome.state.activity.at(-1)?.kind).toBe("outcome-recorded");
   });
 
+  it("saves an approved Derived memory only when the person chose saving", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck on a small task.",
+      consentGiven: true,
+      saveRequested: true
+    });
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+    expect(started.state.saveRequested).toBe(true);
+    expect(started.state.persistence).toBe("pending");
+
+    const selected = await runGooglePivotCommand(started.state, {
+      type: "select-pivot",
+      pivotKind: PIVOT_LIBRARY[0].kind
+    });
+    expect(selected.kind).toBe("ok");
+    if (selected.kind !== "ok") return;
+
+    const outcome = await runGooglePivotCommand(selected.state, {
+      type: "record-outcome",
+      outcome: { status: "completed", agencyShift: "more-able" }
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.state.persistence).toBe("saved");
+    expect(outcome.state.enrichment).toBe("saved");
+    expect(outcome.state.derivedMemory).toMatchObject({ approved: true });
+
+    const unsaved = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck on another task.",
+      consentGiven: true,
+      saveRequested: false
+    });
+    expect(unsaved.kind).toBe("ok");
+    if (unsaved.kind !== "ok") return;
+    const unsavedSelected = await runGooglePivotCommand(unsaved.state, {
+      type: "select-pivot",
+      pivotKind: PIVOT_LIBRARY[0].kind
+    });
+    if (unsavedSelected.kind !== "ok") return;
+    const unsavedOutcome = await runGooglePivotCommand(unsavedSelected.state, {
+      type: "record-outcome",
+      outcome: { status: "skipped" }
+    });
+    expect(unsavedOutcome).toMatchObject({ kind: "ok", state: { persistence: "unsaved", derivedMemory: undefined } });
+  });
+
+  it("keeps a saved outcome when Derived-memory enrichment is unavailable", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck.",
+      consentGiven: true,
+      saveRequested: true
+    });
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+    const selected = await runGooglePivotCommand(started.state, {
+      type: "select-pivot",
+      pivotKind: PIVOT_LIBRARY[0].kind
+    });
+    if (selected.kind !== "ok") return;
+
+    const outcome = await runGooglePivotCommand(selected.state, {
+      type: "record-outcome",
+      outcome: { status: "partly-helpful", agencyShift: "about-as-able" }
+    }, {
+      async generate({ situationMap }) { return output(situationMap); },
+      async deriveMemory() { throw new Error("memory provider unavailable"); }
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "ok",
+      state: { phase: "outcome", persistence: "saved", enrichment: "unavailable", outcome: { status: "partly-helpful" } }
+    });
+    if (outcome.kind !== "ok") return;
+    expect(outcome.state.derivedMemory).toBeUndefined();
+  });
+
+  it("accepts every outcome and Agency-shift value without numeric wellness state", async () => {
+    const combinations = [
+      ["completed", "more-able"],
+      ["partly-helpful", "about-as-able"],
+      ["not-a-fit", "less-able"],
+      ["skipped", undefined]
+    ] as const;
+
+    for (const [status, agencyShift] of combinations) {
+      const started = await runGooglePivotCommand(undefined, {
+        type: "start",
+        quickDump: `Outcome test: ${status}`,
+        consentGiven: true
+      });
+      expect(started.kind).toBe("ok");
+      if (started.kind !== "ok") continue;
+      const selected = await runGooglePivotCommand(started.state, {
+        type: "select-pivot",
+        pivotKind: PIVOT_LIBRARY[0].kind
+      });
+      expect(selected.kind).toBe("ok");
+      if (selected.kind !== "ok") continue;
+      const outcome = await runGooglePivotCommand(selected.state, {
+        type: "record-outcome",
+        outcome: { status, ...(agencyShift ? { agencyShift } : {}) }
+      });
+      expect(outcome).toMatchObject({ kind: "ok", state: { outcome: { status, ...(agencyShift ? { agencyShift } : {}) } } });
+      if (outcome.kind === "ok") {
+        expect(outcome.state).not.toHaveProperty("emotionalState");
+        expect(outcome.state).not.toHaveProperty("wellnessScore");
+      }
+    }
+  });
+
   it("keeps unresolved contradictions while a correction regenerates the map", async () => {
     let generation = 0;
     const generator: GooglePivotGenerator = {

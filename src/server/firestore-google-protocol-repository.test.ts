@@ -84,6 +84,27 @@ describe("Firestore Google Protocol repository", () => {
       pivotState: { nested: { value: "kept" } }
     });
   });
+
+  it("lists saved states only within the authenticated owner's collection", async () => {
+    const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
+    await repository.create({ id: "saved-1", ownerSubject: "firebase-user-1", version: 1, createdAt: "2026-08-26T12:00:00.000Z" });
+    await repository.create({ id: "saved-2", ownerSubject: "firebase-user-2", version: 1, createdAt: "2026-08-26T12:00:00.000Z" });
+    await repository.saveState({
+      protocolId: "saved-1", ownerSubject: "firebase-user-1", expectedVersion: 1,
+      idempotencyKey: "outcome-1", fingerprint: "outcome-1",
+      state: { kind: "pivot-protocol", persistence: "saved" }
+    });
+    await repository.saveState({
+      protocolId: "saved-2", ownerSubject: "firebase-user-2", expectedVersion: 1,
+      idempotencyKey: "outcome-2", fingerprint: "outcome-2",
+      state: { kind: "pivot-protocol", persistence: "saved" }
+    });
+
+    await expect(repository.listSavedForOwner("firebase-user-1")).resolves.toMatchObject([{ id: "saved-1" }]);
+    await expect(repository.listSavedForOwner("firebase-user-2")).resolves.toMatchObject([{ id: "saved-2" }]);
+    await expect(repository.delete({ protocolId: "saved-1", ownerSubject: "firebase-user-2" })).resolves.toBe(false);
+    await expect(repository.delete({ protocolId: "saved-1", ownerSubject: "firebase-user-1" })).resolves.toBe(true);
+  });
 });
 
 class FakeFirestore {
@@ -152,5 +173,9 @@ class FakeDocument {
   async get(): Promise<{ exists: boolean; data: () => Record<string, unknown> | undefined }> {
     const value = this.documents.get(this.path);
     return { exists: value !== undefined, data: () => value };
+  }
+
+  async delete(): Promise<void> {
+    this.documents.delete(this.path);
   }
 }

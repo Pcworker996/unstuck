@@ -4,8 +4,10 @@ import { vertexAI } from "@genkit-ai/google-genai";
 import type {
   GooglePivotGenerator,
   GooglePivotGeneratorOutput,
+  PivotOutcome,
   SituationMap
 } from "../app/google-pivot-protocol";
+import type { Pivot } from "../app/pivot-protocol";
 
 const mapItemSchema = z.object({
   id: z.string(),
@@ -66,8 +68,36 @@ export function createGenkitGooglePivotGenerator(): GooglePivotGenerator {
         throw new Error("Gemini repair returned no structured Pivot output.");
       }
       return response.output;
+    },
+    async deriveMemory({ quickDump, situationMap, selectedPivot, outcome }) {
+      const response = await ai.generate({
+        model,
+        prompt: memoryPromptFor({ quickDump, situationMap, selectedPivot, outcome }),
+        output: { schema: z.string().max(500) }
+      });
+      if (!response.output) {
+        throw new Error("Gemini returned no Derived-memory context.");
+      }
+      return response.output;
     }
   };
+}
+
+function memoryPromptFor(input: {
+  quickDump: string;
+  situationMap: SituationMap;
+  selectedPivot: Pivot;
+  outcome: PivotOutcome;
+}): string {
+  return [
+    "Create one compact factual Derived-memory context for the person who chose to save this Check-in.",
+    "Use plain language, no diagnosis, prediction, emotional score, wellness score, or professional advice.",
+    "Keep it under 500 characters. Mention the situation only as needed, the selected Pivot, and the reported outcome.",
+    `Private entry: ${input.quickDump}`,
+    `Situation map: ${JSON.stringify(input.situationMap)}`,
+    `Selected Pivot: ${input.selectedPivot.title} — ${input.selectedPivot.instruction}`,
+    `Reported outcome: ${JSON.stringify(input.outcome)}`
+  ].join("\n\n");
 }
 
 function promptFor(input: {

@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { GooglePivotGenerator } from "../app/google-pivot-protocol";
 import {
   createInMemoryGoogleProtocolRepository,
+  deleteGoogleSavedProtocol,
+  listGoogleSavedProtocols,
   loadGoogleProtocol,
   runGoogleProtocolCommand,
   startGoogleProtocol
@@ -220,5 +222,103 @@ describe("Google Protocol", () => {
     };
     expect(await runGoogleProtocolCommand(skipInput, { repository }, questionGenerator)).toMatchObject({ kind: "state", state: { version: 2 } });
     expect(await runGoogleProtocolCommand(skipInput, { repository }, questionGenerator)).toMatchObject({ kind: "state", replayed: true, state: { version: 2 } });
+  });
+
+  it("lists only completed saved Check-ins and deletes them only for their owner", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    let nextId = 1;
+    const dependencies = {
+      repository,
+      createId: () => `protocol-${nextId++}`,
+      now: () => "2026-08-26T12:00:00.000Z"
+    };
+
+    async function finishSavedProtocol(subject: string, protocolId: string) {
+      await startGoogleProtocol({ subject }, dependencies);
+      await runGoogleProtocolCommand({
+        subject,
+        protocolId,
+        expectedVersion: 0,
+        idempotencyKey: `${protocolId}-start`,
+        command: { type: "start", quickDump: "I am stuck.", consentGiven: true, saveRequested: true }
+      }, { repository });
+      await runGoogleProtocolCommand({
+        subject,
+        protocolId,
+        expectedVersion: 1,
+        idempotencyKey: `${protocolId}-select`,
+        command: { type: "select-pivot", pivotKind: "grounding" }
+      }, { repository });
+      await runGoogleProtocolCommand({
+        subject,
+        protocolId,
+        expectedVersion: 2,
+        idempotencyKey: `${protocolId}-outcome`,
+        command: { type: "record-outcome", outcome: { status: "completed" } }
+      }, { repository });
+    }
+
+    await finishSavedProtocol("firebase-user-1", "protocol-1");
+    await finishSavedProtocol("firebase-user-2", "protocol-2");
+    await startGoogleProtocol({ subject: "firebase-user-1" }, dependencies);
+
+    await expect(listGoogleSavedProtocols({ subject: "firebase-user-1" }, { repository })).resolves.toMatchObject({
+      kind: "protocols",
+      protocols: [{ id: "protocol-1", pivotState: { persistence: "saved", outcome: { status: "completed" } } }]
+    });
+    await expect(deleteGoogleSavedProtocol({ subject: "firebase-user-2", protocolId: "protocol-1" }, { repository }))
+      .resolves.toEqual({ kind: "not-found" });
+    await expect(deleteGoogleSavedProtocol({ subject: "firebase-user-1", protocolId: "protocol-1" }, { repository }))
+      .resolves.toEqual({ kind: "deleted", protocolId: "protocol-1" });
+    await expect(listGoogleSavedProtocols({ subject: "firebase-user-1" }, { repository }))
+      .resolves.toEqual({ kind: "protocols", protocols: [] });
+    await expect(listGoogleSavedProtocols({ subject: "firebase-user-2" }, { repository })).resolves.toMatchObject({
+      protocols: [{ id: "protocol-2" }]
+    });
+  });
+
+  it("replays a saved outcome without enriching it twice", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+    let enrichments = 0;
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "grounding",
+          alternativePivotKinds: ["breathing-focus", "reaching-out"],
+          whyThisPivot: "A small next step is available."
+        };
+      },
+      async deriveMemory() {
+        enrichments += 1;
+        return "Saved outcome context.";
+      }
+    };
+    const input = {
+      subject: "firebase-user-1",
+      protocolId: "protocol-1",
+      expectedVersion: 0,
+      idempotencyKey: "start-1",
+      command: { type: "start" as const, quickDump: "I am stuck.", consentGiven: true, saveRequested: true }
+    };
+    await runGoogleProtocolCommand(input, { repository }, generator);
+    await runGoogleProtocolCommand({ ...input, expectedVersion: 1, idempotencyKey: "select-1", command: { type: "select-pivot", pivotKind: "grounding" } }, { repository }, generator);
+    const outcomeInput = {
+      subject: "firebase-user-1",
+      protocolId: "protocol-1",
+      expectedVersion: 2,
+      idempotencyKey: "outcome-1",
+      command: { type: "record-outcome" as const, outcome: { status: "completed" as const } }
+    };
+    const first = await runGoogleProtocolCommand(outcomeInput, { repository }, generator);
+    const replay = await runGoogleProtocolCommand(outcomeInput, { repository }, generator);
+
+    expect(first).toMatchObject({ kind: "state", replayed: false, state: { enrichment: "saved" } });
+    expect(replay).toMatchObject({ kind: "state", replayed: true, state: { enrichment: "saved" } });
+    expect(enrichments).toBe(1);
   });
 });

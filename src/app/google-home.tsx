@@ -24,6 +24,7 @@ export function GoogleHome() {
   const [pivotResult, setPivotResult] = useState<GooglePivotResult>();
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string>();
+  const [historyRefresh, setHistoryRefresh] = useState(0);
 
   useEffect(() => {
     getFirebaseGoogleAuthClient()
@@ -119,9 +120,15 @@ export function GoogleHome() {
           protocolId={protocol.id}
           protocolVersion={protocol.version}
           result={pivotResult}
-          onResult={setPivotResult}
+          onResult={(next) => {
+            setPivotResult(next);
+            if (next.kind === "pivot-protocol" && next.persistence === "saved") {
+              setHistoryRefresh((value) => value + 1);
+            }
+          }}
         />
       ) : null}
+      <GoogleSavedHistory refreshKey={historyRefresh} />
     </main>
   );
 }
@@ -139,6 +146,7 @@ function GooglePivotWorkspace({
 }) {
   const [quickDump, setQuickDump] = useState("");
   const [consentGiven, setConsentGiven] = useState(false);
+  const [saveRequested, setSaveRequested] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const startIdempotencyKey = useRef<string | undefined>(undefined);
@@ -157,7 +165,8 @@ function GooglePivotWorkspace({
           idempotencyKey: startIdempotencyKey.current ?? (startIdempotencyKey.current = crypto.randomUUID()),
           type: "start",
           quickDump,
-          consentGiven
+          consentGiven,
+          saveRequested
         })
       });
       onResult(next);
@@ -198,6 +207,17 @@ function GooglePivotWorkspace({
             <span>
               <strong>I consent to have this Private entry processed.</strong>
               <small>This is user-initiated, non-clinical support.</small>
+            </span>
+          </label>
+          <label className="choice-control">
+            <input
+              type="checkbox"
+              checked={saveRequested}
+              onChange={(event) => setSaveRequested(event.target.checked)}
+            />
+            <span>
+              <strong>Save this Check-in after I record an outcome.</strong>
+              <small>This keeps the Private entry, Situation map, selected Pivot, outcome, and a compact Derived memory for you to inspect or delete.</small>
             </span>
           </label>
           {result?.kind === "consent-required" ? (
@@ -343,6 +363,18 @@ function GooglePivotResultView({
           ) : null}
           {result.phase === "selected" ? <OutcomeControls onSubmit={(outcome) => void command({ type: "record-outcome", outcome })} /> : null}
           {result.outcome ? <p className="form-message">Recorded: {result.outcome.status}{result.outcome.agencyShift ? `, ${result.outcome.agencyShift}` : ""}.</p> : null}
+          {result.phase === "outcome" ? (
+            <section className="history-card" aria-label="Saved Check-in status">
+              <p className="eyebrow">Retention</p>
+              <h3>{result.persistence === "saved" ? "This Check-in is saved" : "This Check-in was not saved"}</h3>
+              <p>{result.persistence === "saved"
+                ? result.enrichment === "saved"
+                  ? "Your selected Pivot, outcome, Situation map, and compact Derived memory are available in Saved Check-ins."
+                  : "Your selected Pivot, outcome, and Situation map are saved. Adaptation is temporarily unavailable, so no Derived memory was added."
+                : "Only this session shows the result; it will not become personal history."}</p>
+              {result.derivedMemory ? <p><strong>Derived memory:</strong> {result.derivedMemory.context}</p> : null}
+            </section>
+          ) : null}
         </section>
       ) : null}
       <details className="situation-map" open>
@@ -363,6 +395,74 @@ function GooglePivotResultView({
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       <ActivityTrace events={result.activity} />
     </>
+  );
+}
+
+type SavedHistoryProtocol = {
+  id: string;
+  createdAt: string;
+  pivotState?: Extract<GooglePivotResult, { kind: "pivot-protocol" }>;
+};
+
+function GoogleSavedHistory({ refreshKey }: { refreshKey: number }) {
+  const [histories, setHistories] = useState<SavedHistoryProtocol[]>([]);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    let active = true;
+    googleApiRequest<{ kind: "protocols"; protocols: SavedHistoryProtocol[] }>("/api/google/history")
+      .then((response) => {
+        if (active) {
+          setHistories(response.protocols);
+          setError(undefined);
+        }
+      })
+      .catch((requestError: unknown) => {
+        if (active) setError(requestError instanceof Error ? requestError.message : "Saved Check-ins are unavailable.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [refreshKey]);
+
+  async function deleteHistory(protocolId: string) {
+    if (!window.confirm("Delete this saved Check-in and its Derived memory?")) return;
+    try {
+      await googleApiRequest(`/api/google/history/${encodeURIComponent(protocolId)}`, { method: "DELETE" });
+      setHistories((current) => current.filter((history) => history.id !== protocolId));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The saved Check-in could not be deleted.");
+    }
+  }
+
+  return (
+    <section className="history-card" aria-labelledby="saved-history-heading">
+      <p className="eyebrow">Private history</p>
+      <h2 id="saved-history-heading">Saved Check-ins</h2>
+      <p className="patterns-card__description">Only Check-ins you chose to save after recording an outcome appear here.</p>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {histories.length === 0 ? <p className="privacy-note">No saved Check-ins yet.</p> : (
+        <ul>
+          {histories.map((history) => {
+            const state = history.pivotState;
+            if (!state) return null;
+            return (
+              <li key={history.id}>
+                <p><strong>{state.outcome?.status}</strong>{state.outcome?.agencyShift ? ` · ${state.outcome.agencyShift}` : ""}</p>
+                <span>{state.checkIn.quickDump}</span>
+                <details>
+                  <summary>Inspect retained state</summary>
+                  <p><strong>Selected Pivot:</strong> {state.selectedPivot?.title}</p>
+                  <p><strong>Situation map:</strong> {state.situationMap.shared.map((item) => item.text).join(" ")}</p>
+                  {state.derivedMemory ? <p><strong>Derived memory:</strong> {state.derivedMemory.context}</p> : <p>No Derived memory was retained.</p>}
+                </details>
+                <button className="history-delete quiet-button" onClick={() => void deleteHistory(history.id)} type="button">Delete saved Check-in</button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 

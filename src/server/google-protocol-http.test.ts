@@ -4,7 +4,9 @@ import { createInMemoryGoogleProtocolRepository } from "./google-protocol";
 import {
   handleGoogleProtocolGet,
   handleGoogleProtocolList,
-  handleGoogleProtocolPost
+  handleGoogleProtocolPost,
+  handleGoogleSavedHistoryDelete,
+  handleGoogleSavedHistoryGet
 } from "./google-protocol-http";
 
 describe("Google Protocol HTTP interface", () => {
@@ -97,5 +99,40 @@ describe("Google Protocol HTTP interface", () => {
         createdAt: "2026-08-26T12:00:00.000Z"
       }
     });
+  });
+
+  it("lists and deletes saved history through the authenticated owner", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await repository.create({
+      id: "saved-1",
+      ownerSubject: "firebase-user-1",
+      version: 1,
+      createdAt: "2026-08-26T12:00:00.000Z",
+      pivotState: { kind: "pivot-protocol", version: 1, situationMap: {}, persistence: "saved", checkIn: { quickDump: "private" } }
+    });
+
+    const history = await handleGoogleSavedHistoryGet(
+      new Request("http://localhost/api/google/history"),
+      { repository },
+      async () => ({ subject: "firebase-user-1" })
+    );
+    expect(history.status).toBe(200);
+    await expect(history.json()).resolves.toMatchObject({ protocols: [{ id: "saved-1" }] });
+
+    const forbiddenDelete = await handleGoogleSavedHistoryDelete(
+      new Request("http://localhost/api/google/history/saved-1", { method: "DELETE" }),
+      "saved-1",
+      { repository },
+      async () => ({ subject: "firebase-user-2" })
+    );
+    expect(forbiddenDelete.status).toBe(404);
+
+    const deleted = await handleGoogleSavedHistoryDelete(
+      new Request("http://localhost/api/google/history/saved-1", { method: "DELETE" }),
+      "saved-1",
+      { repository },
+      async () => ({ subject: "firebase-user-1" })
+    );
+    expect(deleted.status).toBe(200);
   });
 });
