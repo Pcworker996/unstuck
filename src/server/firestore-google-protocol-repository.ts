@@ -75,7 +75,7 @@ export function createFirestoreGoogleProtocolRepository(
         createdAt: value.createdAt,
         pivotState: record.state
       };
-      return record.fingerprint === undefined || record.fingerprint === fingerprint
+      return record.fingerprint === fingerprint
         ? { kind: "match" as const, protocol }
         : { kind: "conflict" as const, protocol };
     },
@@ -100,7 +100,7 @@ export function createFirestoreGoogleProtocolRepository(
           pivotState: value.pivotState
         };
         if (isIdempotencyRecord(existingIdempotency)) {
-          if (existingIdempotency.fingerprint !== undefined && existingIdempotency.fingerprint !== fingerprint) {
+          if (existingIdempotency.fingerprint !== fingerprint) {
             return { kind: "idempotency-conflict" as const, protocol: current };
           }
           return {

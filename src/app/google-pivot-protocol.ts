@@ -167,11 +167,7 @@ export async function runGooglePivotProtocol(
   try {
     generatedOutput = await generator.generate({ quickDump, situationMap });
     activity.push({ kind: "generation", message: "Bounded Pivot generation completed." });
-    validateGeneratorOutput(generatedOutput, situationMap);
-    output = {
-      ...generatedOutput,
-      situationMap: preserveAcceptedMapItems(generatedOutput.situationMap, situationMap, [])
-    };
+    output = validatedGeneratedOutput(generatedOutput, situationMap);
   } catch (error) {
     if (generatedOutput !== undefined) {
       activity.push({
@@ -189,11 +185,7 @@ export async function runGooglePivotProtocol(
           situationMap,
           invalidOutput: generatedOutput ?? error
         });
-        validateGeneratorOutput(repairedOutput, situationMap);
-        output = {
-          ...repairedOutput,
-          situationMap: preserveAcceptedMapItems(repairedOutput.situationMap, situationMap, [])
-        };
+        output = validatedGeneratedOutput(repairedOutput, situationMap);
         activity.push({ kind: "generation", message: "Bounded Pivot generation repaired once." });
       } catch {
         output = fallbackOutput(quickDump, situationMap);
@@ -282,20 +274,7 @@ export async function runGooglePivotCommand(
     if (!current.situationMap.contradictions.some((item) => item.id === command.itemId)) {
       return { kind: "invalid-command", message: "That contradiction no longer exists." };
     }
-    return {
-      kind: "ok",
-      state: {
-        ...current,
-        situationMap: {
-          ...current.situationMap,
-          contradictions: current.situationMap.contradictions.filter((item) => item.id !== command.itemId)
-        },
-        activity: [...current.activity, {
-          kind: "contradiction-resolved",
-          message: "The person resolved a Situation-map contradiction."
-        }]
-      }
-    };
+    return resolveContradiction(current, command, generator);
   }
 
   if (command.type === "select-pivot") {
@@ -466,6 +445,36 @@ async function answerClarification(
   };
 }
 
+async function resolveContradiction(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  command: Extract<GooglePivotCommand, { type: "resolve-contradiction" }>,
+  generator: GooglePivotGenerator
+): Promise<GooglePivotCommandResult> {
+  const situationMap = {
+    ...current.situationMap,
+    contradictions: current.situationMap.contradictions.filter((item) => item.id !== command.itemId)
+  };
+  const generation = await generateValidatedOutput(
+    current.checkIn.quickDump,
+    situationMap,
+    generator,
+    current.clarification?.answers
+  );
+  return {
+    kind: "ok",
+    state: {
+      ...current,
+      situationMap: generation.output.situationMap,
+      ...(current.phase === "recommended" ? { recommendation: recommendationFromOutput(generation.output) } : { recommendation: undefined }),
+      fallback: current.fallback || generation.fallback,
+      activity: [...current.activity, {
+        kind: "contradiction-resolved",
+        message: "The person resolved a Situation-map contradiction and the recommendation was updated."
+      }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
+    }
+  };
+}
+
 async function correctMap(
   current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
   command: Extract<GooglePivotCommand, { type: "correct-map" }>,
@@ -529,26 +538,12 @@ async function generateValidatedOutput(
   let generatedOutput: unknown;
   try {
     generatedOutput = await generator.generate({ quickDump, situationMap, clarificationAnswers });
-    validateGeneratorOutput(generatedOutput, situationMap);
-    return {
-      output: {
-        ...generatedOutput,
-        situationMap: preserveAcceptedMapItems(generatedOutput.situationMap, situationMap, [])
-      },
-      fallback: false
-    };
+    return { output: validatedGeneratedOutput(generatedOutput, situationMap), fallback: false };
   } catch (error) {
     if (generator.repair) {
       try {
         const repairedOutput = await generator.repair({ quickDump, situationMap, invalidOutput: generatedOutput ?? error, clarificationAnswers });
-        validateGeneratorOutput(repairedOutput, situationMap);
-        return {
-          output: {
-            ...repairedOutput,
-            situationMap: preserveAcceptedMapItems(repairedOutput.situationMap, situationMap, [])
-          },
-          fallback: false
-        };
+        return { output: validatedGeneratedOutput(repairedOutput, situationMap), fallback: false };
       } catch {
         // Fall through to the curated output so accepted state survives a platform failure.
       }
@@ -674,6 +669,14 @@ function validateGeneratorOutput(
   if (acceptedSituationMap) {
     validateGeneratedProvenance(output.situationMap, acceptedSituationMap);
   }
+}
+
+function validatedGeneratedOutput(output: unknown, acceptedSituationMap: SituationMap): GooglePivotGeneratorOutput {
+  validateGeneratorOutput(output, acceptedSituationMap);
+  return {
+    ...output,
+    situationMap: preserveAcceptedMapItems(output.situationMap, acceptedSituationMap, [])
+  };
 }
 
 function validateGeneratedProvenance(generated: SituationMap, accepted: SituationMap): void {
