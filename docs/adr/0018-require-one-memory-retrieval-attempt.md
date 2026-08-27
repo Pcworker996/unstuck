@@ -1,0 +1,3 @@
+# ADR 0018: Require one bounded memory retrieval attempt per consented Check-in
+
+For every consented Check-in, the backend must perform exactly one bounded, owner-scoped memory retrieval attempt before generating the Pivot recommendation; a no-match result is valid and leads to a curated fallback. The model may decide how strongly retrieved Derived memories should influence its structured recommendation, but it cannot skip the retrieval boundary or control identity, ownership, or SQL. This makes semantic memory a reliable product behavior and a demonstrable part of the agent flow while preserving deterministic privacy and safety controls.

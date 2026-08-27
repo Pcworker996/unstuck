@@ -41,6 +41,10 @@ export type PivotProtocol = {
     privateEntry: false;
     derivedMemory: false;
   };
+  pendingCheckInId?: string;
+  pendingMemoryId?: string;
+  persistence?: "saved" | "not-saved" | "unavailable";
+  memoryStatus?: "influenced" | "no-match" | "unavailable";
 };
 
 export type SafetyInterruption = {
@@ -54,7 +58,7 @@ export type SafetyInterruption = {
 
 export type PivotProtocolResult = PivotProtocol | SafetyInterruption;
 
-const PIVOT_LIBRARY: readonly Pivot[] = [
+export const PIVOT_LIBRARY: readonly Pivot[] = [
   {
     id: "grounding-five-things",
     kind: "grounding",
@@ -86,6 +90,10 @@ const PIVOT_LIBRARY: readonly Pivot[] = [
     instruction: "Write the smallest action that takes less than ten minutes, then do only that action."
   }
 ];
+
+export function getPivotByKind(kind: string): Pivot | undefined {
+  return PIVOT_LIBRARY.find((pivot) => pivot.kind === kind);
+}
 
 function preferredPivotIndex(quickDump: string, emotionalState: EmotionalState): number {
   const text = quickDump.toLowerCase();

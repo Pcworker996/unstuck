@@ -1,18 +1,15 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import {
-  confirmSignUp,
-  getCurrentUser,
-  signIn,
-  signOut,
-  signUp
-} from "aws-amplify/auth";
 
 import "../lib/amplify-client";
-import { AuthMode, authFormFields } from "./auth-form";
+import { authClient } from "../lib/auth-client";
+import type { AuthMode } from "./auth-form";
+import { authFormFields } from "./auth-form";
 import { PrivateHome } from "./private-home";
-import { PersonalAccount, privateHomeState } from "./private-home-state";
+import type { PersonalAccount } from "./private-home-state";
+import { privateHomeState } from "./private-home-state";
+import { GoogleHome } from "./google-home";
 
 function AuthScreen({ onAuthenticated }: { onAuthenticated: (person: PersonalAccount) => void }) {
   const [mode, setMode] = useState<AuthMode>("sign-in");
@@ -30,18 +27,16 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (person: PersonalAcc
 
     try {
       if (mode === "sign-up") {
-        const result = await signUp({ username: email, password, options: { userAttributes: { email } } });
-        setMode(result.nextStep.signUpStep === "CONFIRM_SIGN_UP" ? "confirm" : "sign-in");
+        setMode(await authClient.createAccount(email, password));
         setMessage("Check your email to confirm your Personal account.");
       } else if (mode === "confirm") {
-        await confirmSignUp({ username: email, confirmationCode });
+        await authClient.confirmAccount(email, confirmationCode);
         setMode("sign-in");
         setMessage("Your account is confirmed. Please sign in.");
       } else {
-        const result = await signIn({ username: email, password });
-        if (result.isSignedIn) {
-          const user = await getCurrentUser();
-          onAuthenticated({ id: user.userId, displayName: user.username });
+        const person = await authClient.signIn(email, password);
+        if (person) {
+          onAuthenticated(person);
         }
       }
     } catch (error) {
@@ -75,13 +70,21 @@ function AuthScreen({ onAuthenticated }: { onAuthenticated: (person: PersonalAcc
 }
 
 export default function HomePage() {
+  if (process.env.NEXT_PUBLIC_UNSTUCK_RUNTIME === "google") {
+    return <GoogleHome />;
+  }
+
+  return <LegacyHomePage />;
+}
+
+function LegacyHomePage() {
   const [person, setPerson] = useState<PersonalAccount>();
   const [checkingSession, setCheckingSession] = useState(true);
 
   useEffect(() => {
-    getCurrentUser()
-      .then((user) => setPerson({ id: user.userId, displayName: user.username }))
-      .catch(() => setPerson(undefined))
+    authClient
+      .currentPerson()
+      .then(setPerson)
       .finally(() => setCheckingSession(false));
   }, []);
 
@@ -97,7 +100,7 @@ export default function HomePage() {
 
   return (
     <PrivateHome
-      onSignOut={() => signOut().then(() => setPerson(undefined))}
+      onSignOut={() => authClient.signOut().then(() => setPerson(undefined))}
       person={state.person}
     />
   );

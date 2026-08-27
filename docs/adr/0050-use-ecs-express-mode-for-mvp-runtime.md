@@ -1,0 +1,3 @@
+# ADR 0050: Use Amazon ECS Express Mode for the MVP runtime
+
+Unstuck deploys the containerized Next.js application, including its backend route handlers, as one Amazon ECS Express Mode service on Fargate. Express Mode replaces the superseded App Runner decision because AWS stopped accepting new App Runner customers on April 30, 2026 and recommends Express Mode for new containerized applications. This keeps the mobile-first experience and authenticated Pivot protocol in one deployable runtime while Bedrock and CockroachDB credentials remain server-side; the customer-facing pivot guide does not use Managed MCP directly.

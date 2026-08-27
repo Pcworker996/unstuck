@@ -20,6 +20,10 @@ SHOW INDEXES FROM derived_memories;
 
 -- 3. This is the runtime Semantic retrieval shape used by the Pivot guide.
 -- The account predicate must be bound from the authenticated Personal account.
+WITH query_vector AS (
+    SELECT (ARRAY(SELECT CASE WHEN i = 1 THEN 1.0 ELSE 0.0 END
+                  FROM generate_series(1, 1024) AS s(i)))::VECTOR(1024) AS embedding
+)
 SELECT
     memory_id,
     account_id,
@@ -27,22 +31,27 @@ SELECT
     selected_pivot_kind,
     selected_pivot_title,
     outcome_kind,
-    1 - (embedding <=> '[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]') AS cosine_similarity
+    1 - (derived_memories.embedding <=> query_vector.embedding) AS cosine_similarity
 FROM derived_memories
+CROSS JOIN query_vector
 WHERE account_id = 'mcp-fixture-owner'
   AND forgotten_at IS NULL
   AND outcome_kind IN ('completed', 'partly-helpful')
-ORDER BY embedding <=> '[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]'
+ORDER BY derived_memories.embedding <=> query_vector.embedding
 LIMIT 5;
 
 -- 4. The owner-scoped result must never contain another account.
-WITH retrieved AS (
+WITH query_vector AS (
+    SELECT (ARRAY(SELECT CASE WHEN i = 1 THEN 1.0 ELSE 0.0 END
+                  FROM generate_series(1, 1024) AS s(i)))::VECTOR(1024) AS embedding
+), retrieved AS (
     SELECT account_id
     FROM derived_memories
+    CROSS JOIN query_vector
     WHERE account_id = 'mcp-fixture-owner'
       AND forgotten_at IS NULL
       AND outcome_kind IN ('completed', 'partly-helpful')
-    ORDER BY embedding <=> '[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]'
+    ORDER BY derived_memories.embedding <=> query_vector.embedding
     LIMIT 5
 )
 SELECT CASE

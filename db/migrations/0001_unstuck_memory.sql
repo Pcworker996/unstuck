@@ -1,7 +1,7 @@
 -- Unstuck staging schema contract.
 -- Apply this migration to the selected Unstuck staging database only.
--- VECTOR(6) matches the deterministic MVP embedding adapter. A Bedrock model
--- with a different dimension must be introduced through a reviewed migration.
+-- The initial staging schema used deterministic VECTOR(6) embeddings. Apply
+-- 0002_titan_v2_embeddings.sql before running the real backend.
 
 CREATE TABLE personal_accounts (
     account_id STRING PRIMARY KEY,

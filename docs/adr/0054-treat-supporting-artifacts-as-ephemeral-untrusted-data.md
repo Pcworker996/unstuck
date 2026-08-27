@@ -1,0 +1,3 @@
+# ADR 0054: Treat supporting artifacts as ephemeral untrusted data
+
+Supporting artifacts are optional, untrusted data with no authority to invoke tools, change safety rules, retrieve memory, or schedule events. Images are processed inline and PDFs use private temporary object storage that is deleted after processing with a one-day lifecycle backstop; only person-approved facts or excerpts may remain in a saved situation map, preserving the saved private-entry decision in ADR 0001 without accumulating raw files. Safety screening runs once on direct input and again on extracted artifact content before the normal pivot protocol continues.

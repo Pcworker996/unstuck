@@ -8,7 +8,7 @@ The workflow uses CockroachDB Cloud Managed MCP for schema inspection, migration
 
 The customer-facing application must use a constrained backend database adapter. The browser must never receive CockroachDB credentials or MCP access. Production Private entries must not be exposed to this workflow.
 
-The migration reserves `VECTOR(6)` because the current deterministic embedding adapter emits six values. A future Bedrock embedding model with another dimension requires a reviewed schema migration and a new validation fixture; do not silently write a different dimension into this table.
+The application uses Amazon Titan Text Embeddings V2 with normalized `VECTOR(1024)` values. Existing staging data created by the deterministic `VECTOR(6)` prototype must go through `0002_titan_v2_embeddings.sql` and be re-embedded before it is eligible for retrieval; never mix the two dimensions.
 
 ## Connect Codex to the staging cluster
 
@@ -44,7 +44,7 @@ Ask the connected AI coding agent:
 
 > Using CockroachDB Managed MCP on the Unstuck staging cluster, list the tables in the application database, inspect the schemas for `personal_accounts`, `check_ins`, `private_entries`, `derived_memories`, and `pivot_outcomes`, and show the current indexes on `derived_memories`. Do not write anything.
 
-The expected schema is defined in [`db/migrations/0001_unstuck_memory.sql`](../db/migrations/0001_unstuck_memory.sql). Record the MCP result in the staging evidence log before applying a migration.
+The expected schema is defined by [`db/migrations/0001_unstuck_memory.sql`](../db/migrations/0001_unstuck_memory.sql) followed by [`db/migrations/0002_titan_v2_embeddings.sql`](../db/migrations/0002_titan_v2_embeddings.sql). Record the MCP result in the staging evidence log before applying a migration.
 
 Before creating the vector index, inspect `feature.vector_index.enabled`. If the
 staging cluster has it disabled, have the cluster operator enable it through the
@@ -57,7 +57,7 @@ Have the agent compare the live schema with the migration file and report a plan
 
 > Compare the Unstuck staging schema with `db/migrations/0001_unstuck_memory.sql`. Identify missing or divergent tables, constraints, account ownership indexes, and the account-prefixed vector index. Show the proposed DDL and wait for approval before writing.
 
-Apply the reviewed migration through the approved staging migration path. Then use Managed MCP to inspect the resulting table schemas and `SHOW INDEXES FROM derived_memories`. The migration is successful only when the ownership constraints and the cosine-enabled `derived_memories_account_embedding_idx` are present.
+Apply both reviewed migrations through the approved staging migration path. Run `npm run db:reembed` when rows predate the Titan migration, then use Managed MCP to inspect the resulting table schemas and `SHOW INDEXES FROM derived_memories`. The migration is successful only when the ownership constraints, populated `VECTOR(1024)` values, and cosine-enabled `derived_memories_account_embedding_idx` are present.
 
 ### 3. Load synthetic fixtures
 
@@ -89,7 +89,7 @@ Run [`db/validation/managed-mcp-cleanup.sql`](../db/validation/managed-mcp-clean
 ## Managed MCP staging validation — YYYY-MM-DD
 
 - Cluster: <redacted staging cluster ID>
-- Migration: 0001_unstuck_memory.sql
+- Migration: 0001_unstuck_memory.sql + 0002_titan_v2_embeddings.sql
 - Schema inspection: pass/fail
 - Migration/index validation: pass/fail
 - Owner-scoped retrieval: pass/fail

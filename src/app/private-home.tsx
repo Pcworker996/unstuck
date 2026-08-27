@@ -10,24 +10,17 @@ import type {
   PivotProtocol,
   PivotProtocolResult
 } from "./pivot-protocol";
-import { runPivotProtocol } from "./pivot-protocol";
+import { getPivotByKind, runPivotProtocol } from "./pivot-protocol";
 import {
-  completeCheckIn,
-  deleteSavedCheckIn,
-  forgetPattern,
-  loadSavedCheckIns,
-  loadForgottenMemoryIds,
-  persistSavedCheckIns,
-  persistForgottenMemoryIds,
-  type CheckInCompletion,
   type PivotOutcome,
   type PivotOutcomeKind,
   type SavedCheckIn
 } from "./check-in-memory";
-import { runPersonalizedPivotProtocol } from "./semantic-retrieval";
 import type { PersonalAccount } from "./private-home-state";
 import { deriveYourPatterns } from "./your-patterns";
 import { YourPatternsView } from "./your-patterns-view";
+import { apiRequest } from "../lib/api-client";
+import type { InspectableMemory } from "../server/pivot-service";
 
 const EMOTIONAL_STATE_RATINGS: readonly EmotionalState[] = [1, 2, 3, 4, 5];
 const OUTCOME_OPTIONS: readonly { kind: PivotOutcomeKind; label: string }[] = [
@@ -36,6 +29,16 @@ const OUTCOME_OPTIONS: readonly { kind: PivotOutcomeKind; label: string }[] = [
   { kind: "not-a-fit", label: "Not a fit" },
   { kind: "skipped", label: "Skipped" }
 ];
+
+type PivotResponse =
+  | PivotProtocolResult
+  | { kind: "consent-required" };
+
+type CompletionState = {
+  outcome: PivotOutcome;
+  saved: boolean;
+  enrichment: "saved" | "unavailable" | "not-applicable";
+};
 
 type PrivateHomeProps = {
   person: PersonalAccount;
@@ -54,24 +57,42 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
     "check-in" | "outcome" | "completed" | "dismissed"
   >("check-in");
   const [chosenPivot, setChosenPivot] = useState<Pivot>();
-  const [completion, setCompletion] = useState<CheckInCompletion>();
+  const [completion, setCompletion] = useState<CompletionState>();
   const [pivotStartedAt, setPivotStartedAt] = useState<number>();
-  const [savedCheckIns, setSavedCheckIns] = useState<SavedCheckIn[]>(() =>
-    loadSavedCheckIns(person.id)
-  );
-  const [forgottenMemoryIds, setForgottenMemoryIds] = useState<string[]>(() =>
-    loadForgottenMemoryIds(person.id)
-  );
+  const [pendingCheckInId, setPendingCheckInId] = useState<string>();
+  const [pendingMemoryId, setPendingMemoryId] = useState<string>();
+  const [savedCheckIns, setSavedCheckIns] = useState<SavedCheckIn[]>([]);
+  const [forgottenMemoryIds, setForgottenMemoryIds] = useState<string[]>([]);
+  const [requestError, setRequestError] = useState<string>();
 
   useEffect(() => {
-    persistSavedCheckIns(person.id, savedCheckIns);
-  }, [person.id, savedCheckIns]);
+    let active = true;
+    loadMemoryHistory(person.id)
+      .then(({ records, forgottenIds }) => {
+        if (!active) {
+          return;
+        }
+        setSavedCheckIns(records);
+        setForgottenMemoryIds(forgottenIds);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setRequestError(error instanceof Error ? error.message : "History is unavailable.");
+        }
+      });
 
-  useEffect(() => {
-    persistForgottenMemoryIds(person.id, forgottenMemoryIds);
-  }, [person.id, forgottenMemoryIds]);
+    return () => {
+      active = false;
+    };
+  }, [person.id]);
 
-  function submitCheckIn(event: FormEvent<HTMLFormElement>) {
+  async function refreshHistory() {
+    const history = await loadMemoryHistory(person.id);
+    setSavedCheckIns(history.records);
+    setForgottenMemoryIds(history.forgottenIds);
+  }
+
+  async function submitCheckIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const checkIn: CurrentCheckIn = {
@@ -83,23 +104,30 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
       return;
     }
 
-    const checkInStartedAt = Date.now();
-    const nextProtocol = runPersonalizedPivotProtocol({
-      accountId: person.id,
-      checkIn,
-      consentGiven,
-      memories: savedCheckIns,
-      forgottenMemoryIds
-    });
-    if (nextProtocol.kind === "consent-required") {
-      setConsentError(true);
-      return;
-    }
+    setRequestError(undefined);
+    try {
+      const nextProtocol = await apiRequest<PivotResponse>("/api/pivot", {
+        method: "POST",
+        body: JSON.stringify({ checkIn, consentGiven, saveRequested: saveCheckIn })
+      });
+      if (nextProtocol.kind === "consent-required") {
+        setConsentError(true);
+        return;
+      }
 
-    setProtocol(nextProtocol);
-    setRegenerationOffset(0);
-    setPivotStartedAt(checkInStartedAt);
-    setFlowState("check-in");
+      setProtocol(nextProtocol);
+      setPendingCheckInId(
+        nextProtocol.kind === "pivot-protocol" ? nextProtocol.pendingCheckInId : undefined
+      );
+      setPendingMemoryId(
+        nextProtocol.kind === "pivot-protocol" ? nextProtocol.pendingMemoryId : undefined
+      );
+      setRegenerationOffset(0);
+      setPivotStartedAt(Date.now());
+      setFlowState("check-in");
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : "We could not suggest a Pivot.");
+    }
   }
 
   function regeneratePivot() {
@@ -117,32 +145,52 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
     setFlowState("outcome");
   }
 
-  function submitOutcome(outcome: PivotOutcome) {
+  async function submitOutcome(outcome: PivotOutcome) {
     if (!protocol || protocol.kind !== "pivot-protocol" || !chosenPivot) {
       return;
     }
 
-    const result = completeCheckIn({
-      accountId: person.id,
-      checkInId: createCheckInId(),
-      checkIn: protocol.checkIn,
-      selectedPivot: chosenPivot,
-      outcome,
-      pivotTimeSeconds:
-        pivotStartedAt === undefined ? undefined : (Date.now() - pivotStartedAt) / 1000,
-      saveCheckIn
-    });
+    setRequestError(undefined);
+    try {
+      if (pendingCheckInId) {
+        const result = await apiRequest<{
+          kind: "saved" | "conflict";
+          idempotent?: boolean;
+          enrichment?: "saved" | "unavailable" | "already-saved";
+        }>("/api/pivot/outcome", {
+          method: "POST",
+          body: JSON.stringify({
+            checkInId: pendingCheckInId,
+            selectedPivotKind: chosenPivot.kind,
+            outcomeKind: outcome.kind,
+            updatedEmotionalState: outcome.updatedEmotionalState,
+            pivotTimeSeconds:
+              pivotStartedAt === undefined ? undefined : (Date.now() - pivotStartedAt) / 1000
+          })
+        });
+        if (result.kind === "conflict") {
+          throw new Error("This Check-in already has a different outcome.");
+        }
 
-    const savedCheckIn = result.savedCheckIn;
-    if (savedCheckIn) {
-      setSavedCheckIns((current) => [...current, savedCheckIn]);
+        await refreshHistory();
+        setCompletion({
+          outcome,
+          saved: true,
+          enrichment: result.enrichment === "unavailable" ? "unavailable" : "saved"
+        });
+      } else {
+        setCompletion({ outcome, saved: false, enrichment: "not-applicable" });
+      }
+      setFlowState("completed");
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : "We could not save that outcome.");
     }
-
-    setCompletion(result);
-    setFlowState("completed");
   }
 
-  function startAnotherCheckIn() {
+  async function startAnotherCheckIn() {
+    if (pendingMemoryId && !completion) {
+      await discardPendingMemory();
+    }
     setQuickDump("");
     setEmotionalState(3);
     setProtocol(undefined);
@@ -153,23 +201,44 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
     setConsentGiven(false);
     setConsentError(false);
     setSaveCheckIn(false);
+    setPendingCheckInId(undefined);
+    setPendingMemoryId(undefined);
     setFlowState("check-in");
   }
 
-  function handleDeleteSavedCheckIn(checkInId: string) {
-    setSavedCheckIns((current) => deleteSavedCheckIn(current, person.id, checkInId));
-    setForgottenMemoryIds((current) => current.filter((id) => id !== checkInId));
+  async function handleDeleteSavedCheckIn(memoryId: string) {
+    try {
+      await apiRequest(`/api/memories/${encodeURIComponent(memoryId)}`, { method: "DELETE" });
+      setSavedCheckIns((current) => current.filter((record) => record.id !== memoryId));
+      setForgottenMemoryIds((current) => current.filter((id) => id !== memoryId));
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : "We could not delete that memory.");
+    }
   }
 
-  function forgetSavedPattern(checkInId: string) {
-    setForgottenMemoryIds((current) =>
-      forgetPattern({
-        accountId: person.id,
-        checkInId,
-        records: savedCheckIns,
-        forgottenMemoryIds: current
-      })
-    );
+  async function forgetSavedPattern(memoryId: string) {
+    try {
+      await apiRequest(`/api/memories/${encodeURIComponent(memoryId)}/forget`, {
+        method: "POST"
+      });
+      setForgottenMemoryIds((current) => [...new Set([...current, memoryId])]);
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : "We could not forget that pattern.");
+    }
+  }
+
+  async function discardPendingMemory() {
+    if (!pendingMemoryId) {
+      return;
+    }
+
+    try {
+      await apiRequest(`/api/memories/${encodeURIComponent(pendingMemoryId)}`, {
+        method: "DELETE"
+      });
+    } catch (error) {
+      setRequestError(error instanceof Error ? error.message : "We could not discard the Check-in.");
+    }
   }
 
   return (
@@ -191,6 +260,8 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
           choose it.
         </p>
       </section>
+
+      {requestError ? <p className="form-error" role="alert">{requestError}</p> : null}
 
       {flowState === "check-in" && !protocol ? (
         <section aria-labelledby="check-in-heading" className="check-in-card">
@@ -282,7 +353,12 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
       {flowState === "check-in" && protocol?.kind === "pivot-protocol" ? (
         <PivotRecommendation
           onChoose={choosePivot}
-          onDismiss={() => setFlowState("dismissed")}
+          onDismiss={async () => {
+            await discardPendingMemory();
+            setPendingCheckInId(undefined);
+            setPendingMemoryId(undefined);
+            setFlowState("dismissed");
+          }}
           onRegenerate={regeneratePivot}
           protocol={protocol}
           saveCheckIn={saveCheckIn}
@@ -334,10 +410,6 @@ export function PrivateHome({ person, onSignOut }: PrivateHomeProps) {
   );
 }
 
-function createCheckInId() {
-  return globalThis.crypto?.randomUUID?.() ?? `check-in-${Date.now()}`;
-}
-
 function SafetyInterruptionNotice() {
   return (
     <section
@@ -375,7 +447,7 @@ function PivotRecommendation({
   saveCheckIn
 }: {
   onChoose: (pivot: Pivot) => void;
-  onDismiss: () => void;
+  onDismiss: () => void | Promise<void>;
   onRegenerate: () => void;
   protocol: PivotProtocol;
   saveCheckIn: boolean;
@@ -529,10 +601,10 @@ function CompletionNotice({
   completion,
   onStartAnother
 }: {
-  completion: CheckInCompletion;
+  completion: CompletionState;
   onStartAnother: () => void;
 }) {
-  const wasSaved = Boolean(completion.savedCheckIn);
+  const wasSaved = completion.saved;
 
   return (
     <section aria-labelledby="completion-heading" className="pivot-result">
@@ -542,7 +614,9 @@ function CompletionNotice({
       </h2>
       <p>
         {wasSaved
-          ? "The Private entry, Derived memory, selected Pivot, and Pivot outcome belong to your Personal account."
+          ? completion.enrichment === "unavailable"
+            ? "The Private entry, selected Pivot, and outcome were saved. Memory enrichment is temporarily unavailable."
+            : "The Private entry, Derived memory, selected Pivot, and Pivot outcome belong to your Personal account."
           : "Your outcome was recorded for this moment only. Nothing from this Check-in was saved."}
       </p>
       <p className="privacy-note">Outcome: {outcomeLabel(completion.outcome.kind)}.</p>
@@ -617,4 +691,62 @@ function memoryAnchorId(memoryId: string): string {
 
 function outcomeLabel(kind: PivotOutcomeKind) {
   return OUTCOME_OPTIONS.find((option) => option.kind === kind)?.label ?? kind;
+}
+
+async function loadMemoryHistory(accountId: string): Promise<{
+  records: SavedCheckIn[];
+  forgottenIds: string[];
+}> {
+  const response = await apiRequest<{ memories: readonly InspectableMemory[] }>("/api/memories");
+  const records = response.memories.flatMap((memory) => {
+    const record = toSavedCheckIn(accountId, memory);
+    return record ? [record] : [];
+  });
+
+  return {
+    records,
+    forgottenIds: response.memories
+      .filter((memory) => memory.forgottenAt !== null)
+      .map((memory) => memory.id)
+  };
+}
+
+function toSavedCheckIn(accountId: string, memory: InspectableMemory): SavedCheckIn | undefined {
+  if (
+    !memory.selectedPivotKind ||
+    !isPivotOutcomeKind(memory.outcomeKind) ||
+    !isEmotionalState(memory.emotionalState)
+  ) {
+    return undefined;
+  }
+
+  const selectedPivot = getPivotByKind(memory.selectedPivotKind);
+  if (!selectedPivot) {
+    return undefined;
+  }
+
+  return {
+    id: memory.id,
+    accountId,
+    privateEntry: {
+      quickDump: memory.quickDump,
+      emotionalState: memory.emotionalState
+    },
+    derivedMemory: {
+      emotionalState: memory.emotionalState,
+      selectedPivotKind: selectedPivot.kind,
+      outcome: memory.outcomeKind,
+      embedding: []
+    },
+    selectedPivot,
+    pivotOutcome: { kind: memory.outcomeKind }
+  };
+}
+
+function isPivotOutcomeKind(value: string | null): value is PivotOutcomeKind {
+  return OUTCOME_OPTIONS.some((option) => option.kind === value);
+}
+
+function isEmotionalState(value: number): value is EmotionalState {
+  return value === 1 || value === 2 || value === 3 || value === 4 || value === 5;
 }

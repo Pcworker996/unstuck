@@ -91,7 +91,8 @@ VALUES
         'Make the next step visible',
         'completed',
         90,
-        '[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]'
+        (ARRAY(SELECT CASE WHEN i = 1 THEN 1.0 ELSE 0.0 END
+               FROM generate_series(1, 1024) AS s(i)))::VECTOR(1024)
     ),
     (
         'mcp-fixture-owner',
@@ -101,7 +102,8 @@ VALUES
         'Make one basic reset',
         'skipped',
         60,
-        '[0.0, 1.0, 0.0, 0.0, 0.0, 0.0]'
+        (ARRAY(SELECT CASE WHEN i = 2 THEN 1.0 ELSE 0.0 END
+               FROM generate_series(1, 1024) AS s(i)))::VECTOR(1024)
     ),
     (
         'mcp-fixture-owner',
@@ -111,7 +113,8 @@ VALUES
         'Make the next step visible',
         'completed',
         120,
-        '[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]'
+        (ARRAY(SELECT CASE WHEN i = 1 THEN 1.0 ELSE 0.0 END
+               FROM generate_series(1, 1024) AS s(i)))::VECTOR(1024)
     ),
     (
         'mcp-fixture-other',
@@ -121,7 +124,8 @@ VALUES
         'Make the next step visible',
         'completed',
         90,
-        '[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]'
+        (ARRAY(SELECT CASE WHEN i = 1 THEN 1.0 ELSE 0.0 END
+               FROM generate_series(1, 1024) AS s(i)))::VECTOR(1024)
     )
 ON CONFLICT (account_id, check_in_id) DO NOTHING;
 

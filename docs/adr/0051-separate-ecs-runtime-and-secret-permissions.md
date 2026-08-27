@@ -1,0 +1,3 @@
+# ADR 0051: Separate ECS runtime and secret permissions
+
+The ECS Express Mode service uses a task role for server-side Bedrock model invocation and a task execution role for ECR image pulls, CloudWatch logs, and injection of the CockroachDB `DATABASE_URL` from AWS Secrets Manager. The Express Mode infrastructure role separately permits ECS to provision its managed load balancing, networking, scaling, and deployment resources. Each role is limited to its required resources; no long-lived AWS access keys or database credentials are stored in source control, client code, browser configuration, or the container image.
