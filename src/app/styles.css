@@ -26,6 +26,31 @@ input {
   padding: 1.25rem;
 }
 
+@media (min-width: 60rem) {
+  .private-home {
+    width: min(100%, 78rem);
+  }
+
+  .google-pivot-workspace {
+    align-items: start;
+    grid-template-columns: minmax(18rem, 1.1fr) minmax(18rem, 1fr) minmax(14rem, 0.8fr);
+  }
+
+  .google-pivot-workspace > .check-in-card,
+  .google-pivot-workspace > .pivot-card,
+  .google-pivot-workspace > .pivot-result {
+    grid-column: 1;
+  }
+
+  .google-pivot-workspace > .situation-map {
+    grid-column: 2;
+  }
+
+  .google-pivot-workspace > .activity-trace {
+    grid-column: 3;
+  }
+}
+
 .auth-screen,
 .loading-screen {
   display: grid;
@@ -185,6 +210,16 @@ button:disabled {
   margin: 0;
 }
 
+.situation-map__section summary,
+.activity-trace summary {
+  cursor: pointer;
+  list-style-position: outside;
+}
+
+.situation-map__section summary h3 {
+  display: inline;
+}
+
 .situation-map__section p,
 .activity-trace p {
   color: #b8c4ba;
@@ -311,6 +346,48 @@ h1 {
   color: #829084;
   font-size: 0.82rem;
   font-weight: 400;
+}
+
+.button-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.button-row button {
+  border: 0;
+  border-radius: 999px;
+  background: #a9d5ac;
+  color: #102014;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0.7rem 0.9rem;
+}
+
+.button-row .quiet-button,
+.button-row .text-button {
+  background: transparent;
+  color: #c8ecca;
+  font-weight: 400;
+  padding: 0.5rem 0.2rem;
+}
+
+.outcome-controls {
+  border-top: 1px solid #344137;
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+}
+
+select {
+  border: 1px solid #526258;
+  border-radius: 0.55rem;
+  background: #19231d;
+  color: inherit;
+  padding: 0.8rem;
 }
 
 .form-error {

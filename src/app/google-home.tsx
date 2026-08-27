@@ -117,6 +117,7 @@ export function GoogleHome() {
       {protocol ? (
         <GooglePivotWorkspace
           protocolId={protocol.id}
+          protocolVersion={protocol.version}
           result={pivotResult}
           onResult={setPivotResult}
         />
@@ -127,10 +128,12 @@ export function GoogleHome() {
 
 function GooglePivotWorkspace({
   protocolId,
+  protocolVersion,
   result,
   onResult
 }: {
   protocolId: string;
+  protocolVersion: number;
   result: GooglePivotResult | undefined;
   onResult: (result: GooglePivotResult) => void;
 }) {
@@ -147,7 +150,14 @@ function GooglePivotWorkspace({
       const next = await googleApiRequest<GooglePivotResult>("/api/google/pivot", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ protocolId, quickDump, consentGiven })
+        body: JSON.stringify({
+          protocolId,
+          expectedVersion: result?.kind === "pivot-protocol" ? result.version : protocolVersion,
+          idempotencyKey: crypto.randomUUID(),
+          type: "start",
+          quickDump,
+          consentGiven
+        })
       });
       onResult(next);
     } catch (requestError) {
@@ -196,7 +206,9 @@ function GooglePivotWorkspace({
         </form>
       ) : null}
       {result?.kind === "safety-interruption" ? <GoogleSafetyResult result={result} /> : null}
-      {result?.kind === "pivot-protocol" ? <GooglePivotResultView result={result} /> : null}
+      {result?.kind === "pivot-protocol" ? (
+        <GooglePivotResultView protocolId={protocolId} result={result} onResult={onResult} />
+      ) : null}
     </section>
   );
 }
@@ -216,8 +228,39 @@ function GoogleSafetyResult({ result }: { result: Extract<GooglePivotResult, { k
   );
 }
 
-function GooglePivotResultView({ result }: { result: Extract<GooglePivotResult, { kind: "pivot-protocol" }> }) {
+function GooglePivotResultView({
+  protocolId,
+  result,
+  onResult
+}: {
+  protocolId: string;
+  result: Extract<GooglePivotResult, { kind: "pivot-protocol" }>;
+  onResult: (result: GooglePivotResult) => void;
+}) {
   const [situationMap, setSituationMap] = useState(result.situationMap);
+  const [error, setError] = useState<string>();
+  const [savingItem, setSavingItem] = useState<string>();
+
+  useEffect(() => setSituationMap(result.situationMap), [result.situationMap]);
+
+  async function command(body: Record<string, unknown>) {
+    setError(undefined);
+    try {
+      const next = await googleApiRequest<GooglePivotResult>("/api/google/pivot", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          protocolId,
+          expectedVersion: result.version,
+          idempotencyKey: crypto.randomUUID(),
+          ...body
+        })
+      });
+      onResult(next);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The Pivot Protocol is unavailable.");
+    }
+  }
 
   function updateMapItem(section: keyof SituationMap, id: string, text: string) {
     setSituationMap((current) => ({
@@ -226,31 +269,105 @@ function GooglePivotResultView({ result }: { result: Extract<GooglePivotResult, 
     }));
   }
 
+  async function saveMapItem(section: keyof SituationMap, id: string) {
+    const item = situationMap[section].find((candidate) => candidate.id === id);
+    if (!item) return;
+    setSavingItem(id);
+    try {
+      await command({ type: "correct-map", section, itemId: id, text: item.text });
+    } finally {
+      setSavingItem(undefined);
+    }
+  }
+
   return (
     <>
-      <section className="pivot-card" aria-labelledby="google-pivot-heading">
-        <p className="eyebrow">Recommended Pivot</p>
-        <h2 id="google-pivot-heading">{result.recommendation.primary.title}</h2>
-        <p>{result.recommendation.primary.instruction}</p>
-        <p className="pivot-explanation">{result.recommendation.whyThisPivot}</p>
-        <div className="alternatives">
-          <h3>Two other options</h3>
-          {result.recommendation.alternatives.map((pivot) => (
-            <p key={pivot.id}>{pivot.title}</p>
-          ))}
-        </div>
-      </section>
+      {result.phase === "clarifying" && result.clarification ? (
+        <section className="pivot-card" aria-labelledby="clarification-heading">
+          <p className="eyebrow">One useful question</p>
+          <h2 id="clarification-heading">{result.clarification.question.text}</h2>
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const answer = new FormData(form).get("answer");
+            if (typeof answer === "string") void command({
+              type: "answer-clarification",
+              questionId: result.clarification?.question.id,
+              answer
+            });
+            form.reset();
+          }}>
+            <label htmlFor="clarification-answer">Your answer</label>
+            <textarea id="clarification-answer" name="answer" rows={3} />
+            <div className="button-row">
+              <button type="submit">Answer</button>
+              <button className="quiet-button" onClick={() => void command({
+                type: "skip-clarification",
+                questionId: result.clarification?.question.id
+              })} type="button">Skip</button>
+            </div>
+          </form>
+          <p className="privacy-note">Question {result.clarification.answers.length + 1} of 2. You can continue without answering.</p>
+        </section>
+      ) : null}
+      {result.phase !== "clarifying" && result.phase !== "dismissed" ? (
+        <section className="pivot-card" aria-labelledby="google-pivot-heading">
+          <p className="eyebrow">{result.phase === "outcome" ? "Pivot outcome" : "Recommended Pivot"}</p>
+          <h2 id="google-pivot-heading">{result.recommendation.primary.title}</h2>
+          <p>{result.recommendation.primary.instruction}</p>
+          <p className="pivot-explanation">{result.recommendation.whyThisPivot}</p>
+          <div className="alternatives">
+            <h3>Two other options</h3>
+            {result.recommendation.alternatives.map((pivot) => <p key={pivot.id}>{pivot.title}</p>)}
+          </div>
+          {result.phase === "recommended" ? (
+            <div className="button-row">
+              <button onClick={() => void command({ type: "select-pivot", pivotKind: result.recommendation.primary.kind })} type="button">Choose this Pivot</button>
+              <button className="quiet-button" onClick={() => void command({ type: "regenerate-pivot" })} type="button">Show another</button>
+              <button className="text-button" onClick={() => void command({ type: "dismiss-pivot" })} type="button">Dismiss</button>
+            </div>
+          ) : null}
+          {result.phase === "selected" ? <OutcomeControls onSubmit={(outcome) => void command({ type: "record-outcome", outcome })} /> : null}
+          {result.outcome ? <p className="form-message">Recorded: {result.outcome.status}{result.outcome.agencyShift ? `, ${result.outcome.agencyShift}` : ""}.</p> : null}
+        </section>
+      ) : null}
       <section className="situation-map" aria-labelledby="situation-map-heading">
         <p className="eyebrow">Situation map</p>
         <h2 id="situation-map-heading">What we have so far</h2>
-        <SituationMapSection section="shared" title="You shared" items={situationMap.shared} onChange={updateMapItem} />
-        <SituationMapSection section="interpretations" title="Guide interpretation" items={situationMap.interpretations} onChange={updateMapItem} />
-        <SituationMapSection section="uncertainties" title="Uncertainties" items={situationMap.uncertainties} onChange={updateMapItem} />
-        <SituationMapSection section="constraints" title="Constraints" items={situationMap.constraints} onChange={updateMapItem} />
-        <SituationMapSection section="progress" title="Immediate progress" items={situationMap.progress} onChange={updateMapItem} />
+        <SituationMapSection section="shared" title="You shared" items={situationMap.shared} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection section="artifactClaims" title="Artifact claims" items={situationMap.artifactClaims} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection section="interpretations" title="Guide interpretation" items={situationMap.interpretations} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection section="uncertainties" title="Uncertainties" items={situationMap.uncertainties} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection section="contradictions" title="Contradictions to resolve" items={situationMap.contradictions} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection section="constraints" title="Constraints" items={situationMap.constraints} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection section="progress" title="Immediate progress" items={situationMap.progress} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection section="pivotHistory" title="Pivot history" items={situationMap.pivotHistory} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection section="priorPatterns" title="Relevant prior patterns" items={situationMap.priorPatterns} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
       </section>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
       <ActivityTrace events={result.activity} />
     </>
+  );
+}
+
+function OutcomeControls({ onSubmit }: { onSubmit: (outcome: { status: "completed" | "partly-helpful" | "not-a-fit" | "skipped"; agencyShift?: "more-able" | "about-as-able" | "less-able" }) => void }) {
+  const [agencyShift, setAgencyShift] = useState<"more-able" | "about-as-able" | "less-able">();
+  return (
+    <div className="outcome-controls">
+      <p><strong>How did it go?</strong></p>
+      <div className="button-row">
+        {(["completed", "partly-helpful", "not-a-fit", "skipped"] as const).map((status) => (
+          <button key={status} className="quiet-button" onClick={() => onSubmit({ status, agencyShift })} type="button">{status}</button>
+        ))}
+      </div>
+      <label htmlFor="agency-shift">Optional: how able do you feel to continue?</label>
+      <select id="agency-shift" value={agencyShift ?? ""} onChange={(event) => setAgencyShift(event.target.value as typeof agencyShift)}>
+        <option value="">Choose one</option>
+        <option value="more-able">More able</option>
+        <option value="about-as-able">About as able</option>
+        <option value="less-able">Less able</option>
+      </select>
+    </div>
   );
 }
 
@@ -258,34 +375,43 @@ function SituationMapSection({
   section,
   title,
   items,
-  onChange
+  onChange,
+  onSave,
+  savingItem
 }: {
   section: keyof SituationMap;
   title: string;
   items: { id: string; text: string; provenance: string }[];
   onChange: (section: keyof SituationMap, id: string, text: string) => void;
+  onSave: (section: keyof SituationMap, id: string) => Promise<void>;
+  savingItem: string | undefined;
 }) {
   return (
-    <section className="situation-map__section">
-      <h3>{title}</h3>
+    <details className="situation-map__section" open>
+      <summary><h3>{title}</h3></summary>
       {items.length === 0 ? <p className="privacy-note">Nothing identified yet.</p> : null}
       {items.map((item) => (
-        <label key={item.id} className="situation-map__item">
+        <div key={item.id} className="situation-map__item">
           <span><strong>{item.provenance}:</strong></span>
           <textarea value={item.text} onChange={(event) => onChange(section, item.id, event.target.value)} rows={2} />
-        </label>
+          <button className="text-button" disabled={savingItem === item.id} onClick={() => void onSave(section, item.id)} type="button">
+            {savingItem === item.id ? "Saving…" : "Save correction"}
+          </button>
+        </div>
       ))}
-    </section>
+    </details>
   );
 }
 
 function ActivityTrace({ events }: { events: { kind: string; message: string }[] }) {
   return (
-    <section className="activity-trace" aria-labelledby="activity-trace-heading">
-      <p className="eyebrow">Activity trace</p>
-      <h2 id="activity-trace-heading">Observable actions</h2>
+    <details className="activity-trace" open>
+      <summary>
+        <p className="eyebrow">Activity trace</p>
+        <h2 id="activity-trace-heading">Observable actions</h2>
+      </summary>
       {events.map((event, index) => <p key={`${event.kind}-${index}`}>{event.message}</p>)}
-    </section>
+    </details>
   );
 }
 

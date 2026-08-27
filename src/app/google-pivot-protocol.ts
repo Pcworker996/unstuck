@@ -1,7 +1,7 @@
 import { indicatesImmediateDanger } from "./safety-interruption";
 import { PIVOT_LIBRARY, type Pivot, type PivotKind } from "./pivot-protocol";
 
-export type Provenance = "person" | "guide";
+export type Provenance = "person" | "artifact" | "guide";
 
 export type SituationMapItem = {
   id: string;
@@ -11,10 +11,41 @@ export type SituationMapItem = {
 
 export type SituationMap = {
   shared: SituationMapItem[];
+  artifactClaims: SituationMapItem[];
   interpretations: SituationMapItem[];
   uncertainties: SituationMapItem[];
+  contradictions: SituationMapItem[];
   constraints: SituationMapItem[];
   progress: SituationMapItem[];
+  pivotHistory: SituationMapItem[];
+  priorPatterns: SituationMapItem[];
+};
+
+export type ClarificationQuestion = {
+  id: string;
+  text: string;
+};
+
+export type ClarificationAnswer = {
+  questionId: string;
+  answer?: string;
+  skipped: boolean;
+};
+
+export type MapRevision = {
+  section: keyof SituationMap;
+  itemId: string;
+  previousText: string;
+  previousProvenance: Provenance;
+  text: string;
+  provenance: "person";
+  editedBy: "person";
+};
+
+export type PivotOutcome = {
+  status: "completed" | "partly-helpful" | "not-a-fit" | "skipped";
+  agencyShift?: "more-able" | "about-as-able" | "less-able";
+  pivotTimeSeconds?: number;
 };
 
 export type ActivityEvent = {
@@ -22,6 +53,14 @@ export type ActivityEvent = {
     | "safety-completed"
     | "consent-verified"
     | "map-created"
+    | "clarification-question"
+    | "clarification-answer"
+    | "clarification-skipped"
+    | "map-revised"
+    | "pivot-selected"
+    | "recommendation-regenerated"
+    | "pivot-dismissed"
+    | "outcome-recorded"
     | "generation"
     | "validation"
     | "fallback";
@@ -33,16 +72,24 @@ export type GooglePivotGeneratorOutput = {
   primaryPivotKind: string;
   alternativePivotKinds: string[];
   whyThisPivot: string;
+  clarificationQuestion?: ClarificationQuestion;
 };
 
 export type GooglePivotGenerator = {
-  generate: (input: { quickDump: string; situationMap: SituationMap }) => Promise<unknown>;
+  generate: (input: {
+    quickDump: string;
+    situationMap: SituationMap;
+    clarificationAnswers?: ClarificationAnswer[];
+  }) => Promise<unknown>;
   repair?: (input: {
     quickDump: string;
     situationMap: SituationMap;
     invalidOutput: unknown;
+    clarificationAnswers?: ClarificationAnswer[];
   }) => Promise<unknown>;
 };
+
+export type GooglePivotPhase = "clarifying" | "recommended" | "selected" | "outcome" | "dismissed";
 
 export type GooglePivotResult =
   | { kind: "consent-required" }
@@ -55,6 +102,15 @@ export type GooglePivotResult =
       kind: "pivot-protocol";
       checkIn: { quickDump: string };
       situationMap: SituationMap;
+      version: number;
+      phase: GooglePivotPhase;
+      clarification?: {
+        question: ClarificationQuestion;
+        answers: ClarificationAnswer[];
+      };
+      revisions: MapRevision[];
+      selectedPivot?: Pivot;
+      outcome?: PivotOutcome;
       recommendation: {
         primary: Pivot;
         alternatives: Pivot[];
@@ -137,25 +193,328 @@ export async function runGooglePivotProtocol(
   } else {
     activity.push({ kind: "fallback", message: "Curated fallback preserved the accepted Quick dump." });
   }
+  if (output.clarificationQuestion) {
+    activity.push({ kind: "clarification-question", message: "One clarification question is ready." });
+  }
 
   return {
     kind: "pivot-protocol",
     checkIn: { quickDump },
+    version: 0,
+    phase: output.clarificationQuestion ? "clarifying" : "recommended",
     situationMap: output.situationMap,
-    recommendation: {
-      primary: requirePivot(output.primaryPivotKind),
-      alternatives: output.alternativePivotKinds.map(requirePivot),
-      whyThisPivot: output.whyThisPivot
-    },
+    ...(output.clarificationQuestion
+      ? { clarification: { question: output.clarificationQuestion, answers: [] } }
+      : {}),
+    revisions: [],
+    recommendation: recommendationFromOutput(output),
     activity,
     fallback
   };
+}
+
+export type GooglePivotCommand =
+  | { type: "start"; quickDump: string; consentGiven: boolean }
+  | { type: "answer-clarification"; questionId: string; answer: string }
+  | { type: "skip-clarification"; questionId: string }
+  | {
+      type: "correct-map";
+      section: keyof SituationMap;
+      itemId: string;
+      text: string;
+    }
+  | { type: "select-pivot"; pivotKind: string }
+  | { type: "regenerate-pivot" }
+  | { type: "dismiss-pivot" }
+  | { type: "record-outcome"; outcome: PivotOutcome };
+
+export type GooglePivotCommandResult =
+  | { kind: "ok"; state: Extract<GooglePivotResult, { kind: "pivot-protocol" }> }
+  | { kind: "consent-required" }
+  | { kind: "safety-interruption"; result: Extract<GooglePivotResult, { kind: "safety-interruption" }> }
+  | { kind: "invalid-command"; message: string };
+
+export async function runGooglePivotCommand(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined,
+  command: GooglePivotCommand,
+  generator: GooglePivotGenerator = defaultGenerator
+): Promise<GooglePivotCommandResult> {
+  if (command.type === "start") {
+    if (current) {
+      return { kind: "invalid-command", message: "This protocol has already started." };
+    }
+
+    const result = await runGooglePivotProtocol(command, generator);
+    if (result.kind === "pivot-protocol") return { kind: "ok", state: result };
+    if (result.kind === "consent-required") return result;
+    return { kind: "safety-interruption", result };
+  }
+
+  if (!current) {
+    return { kind: "invalid-command", message: "Start the protocol before sending commands." };
+  }
+
+  if (command.type === "answer-clarification" || command.type === "skip-clarification") {
+    return answerClarification(current, command, generator);
+  }
+
+  if (command.type === "correct-map") {
+    return correctMap(current, command, generator);
+  }
+
+  if (command.type === "select-pivot") {
+    if (current.phase !== "recommended" || !current.recommendation) {
+      return { kind: "invalid-command", message: "A recommendation must be available first." };
+    }
+    const pivot = findPivot(command.pivotKind);
+    if (!pivot) {
+      return { kind: "invalid-command", message: "That Pivot is not available." };
+    }
+    return {
+      kind: "ok",
+      state: {
+        ...current,
+        phase: "selected",
+        selectedPivot: pivot,
+        activity: [...current.activity, {
+          kind: "pivot-selected",
+          message: "The person selected a Pivot to perform."
+        }]
+      }
+    };
+  }
+
+  if (command.type === "regenerate-pivot") {
+    if (!current.recommendation) {
+      return { kind: "invalid-command", message: "A recommendation must be available first." };
+    }
+    const primaryIndex = PIVOT_LIBRARY.findIndex((pivot) => pivot.kind === current.recommendation.primary.kind);
+    const nextIndex = (primaryIndex + 1) % PIVOT_LIBRARY.length;
+    const primary = PIVOT_LIBRARY[nextIndex];
+    return {
+      kind: "ok",
+      state: {
+        ...current,
+        phase: "recommended",
+        selectedPivot: undefined,
+        recommendation: {
+          primary,
+          alternatives: [PIVOT_LIBRARY[(nextIndex + 1) % PIVOT_LIBRARY.length], PIVOT_LIBRARY[(nextIndex + 2) % PIVOT_LIBRARY.length]],
+          whyThisPivot: "This is a different bounded option to consider."
+        },
+        activity: [...current.activity, {
+          kind: "recommendation-regenerated",
+          message: "A different bounded Pivot recommendation was generated."
+        }]
+      }
+    };
+  }
+
+  if (command.type === "dismiss-pivot") {
+    return {
+      kind: "ok",
+      state: {
+        ...current,
+        phase: "dismissed",
+        selectedPivot: undefined,
+        activity: [...current.activity, {
+          kind: "pivot-dismissed",
+          message: "The person dismissed the Pivot recommendation."
+        }]
+      }
+    };
+  }
+
+  if (current.phase !== "selected" || !current.selectedPivot) {
+    return { kind: "invalid-command", message: "Select a Pivot before recording its outcome." };
+  }
+  if (command.outcome.pivotTimeSeconds !== undefined &&
+      (!Number.isInteger(command.outcome.pivotTimeSeconds) || command.outcome.pivotTimeSeconds < 0)) {
+    return { kind: "invalid-command", message: "Pivot time must be a non-negative whole number of seconds." };
+  }
+  return {
+    kind: "ok",
+    state: {
+      ...current,
+      phase: "outcome",
+      outcome: command.outcome,
+      situationMap: {
+        ...current.situationMap,
+        pivotHistory: [
+          ...current.situationMap.pivotHistory,
+          createSituationMapItem(
+            `pivot-history-${current.situationMap.pivotHistory.length + 1}`,
+            `${current.selectedPivot.title}: ${command.outcome.status}.`,
+            "person"
+          )
+        ]
+      },
+      activity: [...current.activity, {
+        kind: "outcome-recorded",
+        message: "The person recorded what happened after the Pivot."
+      }]
+    }
+  };
+}
+
+async function answerClarification(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  command: Extract<GooglePivotCommand, { type: "answer-clarification" | "skip-clarification" }>,
+  generator: GooglePivotGenerator
+): Promise<GooglePivotCommandResult> {
+  if (current.phase !== "clarifying" || !current.clarification) {
+    return { kind: "invalid-command", message: "There is no clarification question waiting for an answer." };
+  }
+  if (current.clarification.question.id !== command.questionId) {
+    return { kind: "invalid-command", message: "That clarification is no longer current." };
+  }
+  if (current.clarification.answers.length >= 2) {
+    return { kind: "invalid-command", message: "The clarification question limit has been reached." };
+  }
+
+  const skipped = command.type === "skip-clarification";
+  const answer = skipped ? undefined : command.answer.trim();
+  if (!skipped && !answer) {
+    return { kind: "invalid-command", message: "An answer cannot be empty." };
+  }
+  const clarificationAnswers = [
+    ...current.clarification.answers,
+    { questionId: command.questionId, ...(answer ? { answer } : {}), skipped }
+  ];
+  const situationMap = answer
+    ? {
+        ...current.situationMap,
+        shared: [
+          ...current.situationMap.shared,
+          createSituationMapItem(`clarification-${clarificationAnswers.length}`, answer, "person")
+        ]
+      }
+    : current.situationMap;
+  const output = await generateValidatedOutput(current.checkIn.quickDump, situationMap, generator, clarificationAnswers);
+  const nextQuestion = clarificationAnswers.length < 2 ? output.clarificationQuestion : undefined;
+  const event: ActivityEvent = {
+    kind: skipped ? "clarification-skipped" : "clarification-answer",
+    message: skipped ? "The person skipped the clarification question." : "The person answered the clarification question."
+  };
+  return {
+    kind: "ok",
+    state: {
+      ...current,
+      phase: nextQuestion ? "clarifying" : "recommended",
+      situationMap: preservePersonOwnedItems(output.situationMap, situationMap),
+      recommendation: recommendationFromOutput(output),
+      clarification: {
+        question: nextQuestion ?? current.clarification.question,
+        answers: clarificationAnswers
+      },
+      activity: [...current.activity, event, ...(nextQuestion ? [{ kind: "clarification-question" as const, message: "One clarification question is ready." }] : [{ kind: "generation" as const, message: "The recommendation was updated from the clarification." }])]
+    }
+  };
+}
+
+async function correctMap(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  command: Extract<GooglePivotCommand, { type: "correct-map" }>,
+  generator: GooglePivotGenerator
+): Promise<GooglePivotCommandResult> {
+  const text = command.text.trim();
+  if (!text) {
+    return { kind: "invalid-command", message: "A Situation-map correction cannot be empty." };
+  }
+  const items = current.situationMap[command.section];
+  const item = items.find((candidate) => candidate.id === command.itemId);
+  if (!item) {
+    return { kind: "invalid-command", message: "That Situation-map item no longer exists." };
+  }
+  const situationMap = {
+    ...current.situationMap,
+    [command.section]: items.map((candidate) => candidate.id === command.itemId
+      ? { ...candidate, text, provenance: "person" as const }
+      : candidate)
+  };
+  const output = await generateValidatedOutput(current.checkIn.quickDump, situationMap, generator, current.clarification?.answers);
+  return {
+    kind: "ok",
+    state: {
+      ...current,
+      phase: "recommended",
+      situationMap: preservePersonOwnedItems(output.situationMap, situationMap),
+      recommendation: recommendationFromOutput(output),
+      selectedPivot: undefined,
+      outcome: undefined,
+      revisions: [
+        ...current.revisions,
+        {
+          section: command.section,
+          itemId: command.itemId,
+          previousText: item.text,
+          previousProvenance: item.provenance,
+          text,
+          provenance: "person",
+          editedBy: "person"
+        }
+      ],
+      activity: [...current.activity, {
+        kind: "map-revised",
+        message: "The person corrected the Situation map; the recommendation was updated."
+      }]
+    }
+  };
+}
+
+async function generateValidatedOutput(
+  quickDump: string,
+  situationMap: SituationMap,
+  generator: GooglePivotGenerator,
+  clarificationAnswers?: ClarificationAnswer[]
+): Promise<GooglePivotGeneratorOutput> {
+  let generatedOutput: unknown;
+  try {
+    generatedOutput = await generator.generate({ quickDump, situationMap, clarificationAnswers });
+    validateGeneratorOutput(generatedOutput);
+    return generatedOutput;
+  } catch (error) {
+    if (generator.repair) {
+      try {
+        const repairedOutput = await generator.repair({ quickDump, situationMap, invalidOutput: generatedOutput ?? error, clarificationAnswers });
+        validateGeneratorOutput(repairedOutput);
+        return repairedOutput;
+      } catch {
+        // Fall through to the curated output so accepted state survives a platform failure.
+      }
+    }
+    return fallbackOutput(quickDump, situationMap);
+  }
+}
+
+function recommendationFromOutput(output: GooglePivotGeneratorOutput) {
+  return {
+    primary: requirePivot(output.primaryPivotKind),
+    alternatives: output.alternativePivotKinds.map(requirePivot),
+    whyThisPivot: output.whyThisPivot
+  };
+}
+
+function preservePersonOwnedItems(generated: SituationMap, accepted: SituationMap): SituationMap {
+  const preserved = { ...generated };
+  for (const section of Object.keys(accepted) as Array<keyof SituationMap>) {
+    const acceptedItems = accepted[section].filter((item) => item.provenance === "person");
+    if (acceptedItems.length === 0) continue;
+    const generatedItems = preserved[section];
+    const acceptedById = new Map(acceptedItems.map((item) => [item.id, item]));
+    preserved[section] = [
+      ...generatedItems.map((item) => acceptedById.get(item.id) ?? item),
+      ...acceptedItems.filter((item) => !generatedItems.some((generatedItem) => generatedItem.id === item.id))
+    ];
+  }
+  return preserved;
 }
 
 function createSituationMap(quickDump: string): SituationMap {
   const shared = createSituationMapItem("shared-1", quickDump, "person");
   return {
     shared: [shared],
+    artifactClaims: [],
     interpretations: [
       createSituationMapItem(
         "interpretation-1",
@@ -166,8 +525,11 @@ function createSituationMap(quickDump: string): SituationMap {
     uncertainties: [
       createSituationMapItem("uncertainty-1", "The smallest useful next step is still uncertain.", "guide")
     ],
+    contradictions: [],
     constraints: [],
-    progress: [createSituationMapItem("progress-1", "Make one part of this situation clearer or more doable.", "person")]
+    progress: [createSituationMapItem("progress-1", "Make one part of this situation clearer or more doable.", "person")],
+    pivotHistory: [],
+    priorPatterns: []
   };
 }
 
@@ -187,6 +549,16 @@ function validateGeneratorOutput(
     typeof output.whyThisPivot !== "string"
   ) {
     throw new Error("Generated Situation map is invalid.");
+  }
+  const clarificationQuestion = output.clarificationQuestion;
+  if (clarificationQuestion !== undefined) {
+    if (!isRecord(clarificationQuestion) ||
+        typeof clarificationQuestion.id !== "string" ||
+        typeof clarificationQuestion.text !== "string" ||
+        !clarificationQuestion.id.trim() ||
+        !clarificationQuestion.text.trim()) {
+      throw new Error("Generated clarification question is invalid.");
+    }
   }
 
   requirePivot(output.primaryPivotKind);
@@ -211,10 +583,14 @@ function isSituationMap(value: unknown): value is SituationMap {
   if (!isRecord(value)) return false;
   return (
     sectionHasProvenance(value.shared, "person") &&
+    sectionHasProvenance(value.artifactClaims, "artifact") &&
     sectionHasProvenance(value.interpretations, "guide") &&
     sectionHasProvenance(value.uncertainties, "guide") &&
+    sectionHasKnownProvenance(value.contradictions) &&
     sectionHasKnownProvenance(value.constraints) &&
-    sectionHasProvenance(value.progress, "person")
+    sectionHasProvenance(value.progress, "person") &&
+    sectionHasKnownProvenance(value.pivotHistory) &&
+    sectionHasKnownProvenance(value.priorPatterns)
   );
 }
 
@@ -240,11 +616,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function requirePivot(kind: string): Pivot {
-  const pivot = PIVOT_LIBRARY.find((candidate) => candidate.kind === kind);
+  const pivot = findPivot(kind);
   if (!pivot) {
     throw new Error("Generated Pivot is outside the bounded library.");
   }
   return pivot;
+}
+
+function findPivot(kind: string): Pivot | undefined {
+  return PIVOT_LIBRARY.find((candidate) => candidate.kind === kind);
 }
 
 function fallbackOutput(quickDump: string, situationMap: SituationMap): GooglePivotGeneratorOutput {
@@ -277,5 +657,5 @@ const defaultGenerator: GooglePivotGenerator = {
 };
 
 function isProvenance(value: unknown): value is Provenance {
-  return value === "person" || value === "guide";
+  return value === "person" || value === "artifact" || value === "guide";
 }

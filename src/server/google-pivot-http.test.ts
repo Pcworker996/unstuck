@@ -65,4 +65,72 @@ describe("Google Pivot HTTP interface", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ kind: "safety-interruption" });
   });
+
+  it("applies versioned commands and returns a visible conflict for stale edits", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+
+    const start = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          expectedVersion: 0,
+          idempotencyKey: "start-1",
+          type: "start",
+          quickDump: "I keep avoiding the first step.",
+          consentGiven: true
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository
+    );
+    const started = await start.json();
+    expect(started).toMatchObject({ kind: "pivot-protocol", version: 1 });
+
+    const correctionBody = {
+      protocolId: "protocol-1",
+      expectedVersion: 1,
+      idempotencyKey: "correction-1",
+      type: "correct-map",
+      section: "shared",
+      itemId: "shared-1",
+      text: "I need to start with the lease checklist."
+    };
+    const corrected = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", { method: "POST", body: JSON.stringify(correctionBody) }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository
+    );
+    expect(corrected.status).toBe(200);
+
+    const replay = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", { method: "POST", body: JSON.stringify(correctionBody) }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository
+    );
+    await expect(replay.json()).resolves.toMatchObject({
+      kind: "pivot-protocol",
+      version: 2,
+      situationMap: { shared: [{ text: "I need to start with the lease checklist." }] }
+    });
+
+    const stale = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        headers: { "if-match": "1", "idempotency-key": "stale-1" },
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          type: "dismiss-pivot"
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository
+    );
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({ kind: "conflict", protocol: { version: 2 } });
+  });
 });

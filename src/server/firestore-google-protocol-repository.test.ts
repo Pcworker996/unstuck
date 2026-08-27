@@ -21,6 +21,40 @@ describe("Firestore Google Protocol repository", () => {
       repository.findByIdForOwner({ protocolId: "protocol-1", ownerSubject: "firebase-user-2" })
     ).resolves.toBeUndefined();
   });
+
+  it("updates only at the expected version and records idempotency", async () => {
+    const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
+    await repository.create({
+      id: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      version: 0,
+      createdAt: "2026-08-26T12:00:00.000Z"
+    });
+
+    await expect(repository.saveState({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 0,
+      idempotencyKey: "command-1",
+      state: { value: "saved" }
+    })).resolves.toMatchObject({ kind: "saved", protocol: { version: 1 } });
+
+    await expect(repository.saveState({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 0,
+      idempotencyKey: "command-2",
+      state: { value: "stale" }
+    })).resolves.toMatchObject({ kind: "conflict", protocol: { version: 1 } });
+
+    await expect(repository.saveState({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 0,
+      idempotencyKey: "command-1",
+      state: { value: "retry" }
+    })).resolves.toMatchObject({ kind: "idempotent", protocol: { version: 1, pivotState: { value: "saved" } } });
+  });
 });
 
 class FakeFirestore {
@@ -28,6 +62,22 @@ class FakeFirestore {
 
   collection(name: string): FakeCollection {
     return new FakeCollection(this.documents, name);
+  }
+
+  async runTransaction<T>(callback: (transaction: FakeTransaction) => Promise<T>): Promise<T> {
+    return callback(new FakeTransaction(this.documents));
+  }
+}
+
+class FakeTransaction {
+  constructor(private readonly documents: Map<string, Record<string, unknown>>) {}
+
+  async get(document: FakeDocument): Promise<{ exists: boolean; data: () => Record<string, unknown> | undefined }> {
+    return document.get();
+  }
+
+  set(document: FakeDocument, value: Record<string, unknown>, options?: { merge?: boolean }): void {
+    document.setNow(value, options);
   }
 }
 
@@ -61,8 +111,13 @@ class FakeDocument {
     return new FakeCollection(this.documents, `${this.path}/${name}`);
   }
 
-  async set(value: Record<string, unknown>): Promise<void> {
-    this.documents.set(this.path, value);
+  async set(value: Record<string, unknown>, options?: { merge?: boolean }): Promise<void> {
+    this.setNow(value, options);
+  }
+
+  setNow(value: Record<string, unknown>, options?: { merge?: boolean }): void {
+    const existing = this.documents.get(this.path);
+    this.documents.set(this.path, options?.merge && existing ? { ...existing, ...value } : value);
   }
 
   async get(): Promise<{ exists: boolean; data: () => Record<string, unknown> | undefined }> {

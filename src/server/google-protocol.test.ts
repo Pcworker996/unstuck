@@ -31,4 +31,40 @@ describe("Google Protocol", () => {
     });
     expect(reloaded).toEqual(created);
   });
+
+  it("rejects stale mutations and replays a mutation with the same idempotency key", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+
+    const first = await repository.saveState({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 0,
+      idempotencyKey: "edit-1",
+      state: { value: "first" }
+    });
+    expect(first.kind).toBe("saved");
+    expect(first.protocol.version).toBe(1);
+
+    const stale = await repository.saveState({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 0,
+      idempotencyKey: "edit-2",
+      state: { value: "stale" }
+    });
+    expect(stale).toMatchObject({ kind: "conflict", protocol: { version: 1 } });
+
+    const replay = await repository.saveState({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 0,
+      idempotencyKey: "edit-1",
+      state: { value: "different-retry" }
+    });
+    expect(replay).toMatchObject({ kind: "idempotent", protocol: { version: 1, pivotState: { value: "first" } } });
+  });
 });
