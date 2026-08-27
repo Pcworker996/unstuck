@@ -460,11 +460,18 @@ async function resolveContradiction(
     generator,
     current.clarification?.answers
   );
+  const situationMapAfterResolution = preserveAcceptedMapItems(
+    generation.output.situationMap,
+    situationMap,
+    current.revisions
+  );
+  situationMapAfterResolution.contradictions = situationMapAfterResolution.contradictions
+    .filter((item) => item.id !== command.itemId);
   return {
     kind: "ok",
     state: {
       ...current,
-      situationMap: generation.output.situationMap,
+      situationMap: situationMapAfterResolution,
       ...(current.phase === "recommended" ? { recommendation: recommendationFromOutput(generation.output) } : { recommendation: undefined }),
       fallback: current.fallback || generation.fallback,
       activity: [...current.activity, {
