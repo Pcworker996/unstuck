@@ -13,8 +13,30 @@ export function randomGooglePdfObjectName(randomId: () => string = () => crypto.
 }
 
 export function createGoogleCloudPdfStorage(bucket: GoogleCloudBucket): GooglePdfTemporaryStorage {
+  let privateBucketVerified = false;
+  const ensureLifecycleRule = async () => {
+    const [metadata] = await bucket.getMetadata();
+    if (metadata.iamConfiguration?.uniformBucketLevelAccess?.enabled !== true || metadata.iamConfiguration.publicAccessPrevention !== "enforced") {
+      throw new Error("The temporary PDF bucket must enforce uniform access and public access prevention.");
+    }
+    const existingRules = Array.isArray(metadata.lifecycle?.rule) ? metadata.lifecycle.rule : [];
+    const hasRule = existingRules.some((rule) =>
+      rule.action?.type === "Delete" &&
+      rule.condition?.age === 1 &&
+      Array.isArray(rule.condition.matchesPrefix) &&
+      rule.condition.matchesPrefix.includes("unstuck/temporary-pdfs/")
+    );
+    if (!hasRule) {
+      await bucket.setMetadata({ lifecycle: { rule: [...existingRules, {
+        action: { type: "Delete" },
+        condition: { age: 1, matchesPrefix: ["unstuck/temporary-pdfs/"] }
+      }] } });
+    }
+    privateBucketVerified = true;
+  };
   return {
     async upload({ bytes }) {
+      if (!privateBucketVerified) await ensureLifecycleRule();
       const objectName = randomGooglePdfObjectName();
       await bucket.file(objectName).save(Buffer.from(bytes), {
         resumable: false,
@@ -25,22 +47,7 @@ export function createGoogleCloudPdfStorage(bucket: GoogleCloudBucket): GooglePd
     async delete(objectName) {
       await bucket.file(objectName).delete({ ignoreNotFound: true });
     },
-    async ensureLifecycleRule() {
-      const [metadata] = await bucket.getMetadata();
-      const existingRules = Array.isArray(metadata.lifecycle?.rule) ? metadata.lifecycle.rule : [];
-      const hasRule = existingRules.some((rule) =>
-        rule.action?.type === "Delete" &&
-        rule.condition?.age === 1 &&
-        Array.isArray(rule.condition.matchesPrefix) &&
-        rule.condition.matchesPrefix.includes("unstuck/temporary-pdfs/")
-      );
-      if (!hasRule) {
-        await bucket.setMetadata({ lifecycle: { rule: [...existingRules, {
-          action: { type: "Delete" },
-          condition: { age: 1, matchesPrefix: ["unstuck/temporary-pdfs/"] }
-        }] } });
-      }
-    }
+    ensureLifecycleRule
   };
 }
 

@@ -352,7 +352,14 @@ async function readBody(request: Request): Promise<unknown> {
       throw new HttpInputError("The supporting artifact upload is too large.");
     }
     try {
-      const form = await request.formData();
+      const limitedBody = request.body && boundedRequestBody(request.body, MAX_GOOGLE_MULTIPART_BODY_BYTES);
+      if (!limitedBody) throw new HttpInputError("The supporting artifact upload is malformed.");
+      const form = await new Request(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: limitedBody,
+        duplex: "half"
+      } as RequestInit).formData();
       const body: Record<string, unknown> = {};
       const artifacts: GoogleSupportingArtifactInput[] = [];
       for (const [key, value] of form.entries()) {
@@ -375,7 +382,8 @@ async function readBody(request: Request): Promise<unknown> {
       if (typeof body.saveRequested === "string") body.saveRequested = body.saveRequested === "true";
       if (typeof body.expectedVersion === "string") body.expectedVersion = Number(body.expectedVersion);
       return body;
-    } catch {
+    } catch (error) {
+      if (error instanceof HttpInputError) throw error;
       throw new HttpInputError("The image upload is malformed.");
     }
   }
@@ -384,6 +392,30 @@ async function readBody(request: Request): Promise<unknown> {
   } catch {
     throw new HttpInputError("Request body must be valid JSON.");
   }
+}
+
+function boundedRequestBody(body: ReadableStream<Uint8Array>, maxBytes: number): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let totalBytes = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        controller.error(new HttpInputError("The supporting artifact upload is too large."));
+        return;
+      }
+      controller.enqueue(value);
+    },
+    async cancel(reason) {
+      await reader.cancel(reason);
+    }
+  });
 }
 
 function json(value: unknown, status: number, correlationId?: string): Response {

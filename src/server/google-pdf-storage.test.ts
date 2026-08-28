@@ -28,7 +28,18 @@ describe("temporary Google PDF storage contract", () => {
 
   it("configures lifecycle without exposing a public URL or original filename", async () => {
     const saves: Array<{ name: string; options: unknown }> = [];
-    let metadata: { lifecycle?: { rule?: unknown[] } } = {};
+    let metadata: {
+      lifecycle?: { rule?: unknown[] };
+      iamConfiguration: {
+        uniformBucketLevelAccess: { enabled: boolean };
+        publicAccessPrevention: string;
+      };
+    } = {
+      iamConfiguration: {
+        uniformBucketLevelAccess: { enabled: true },
+        publicAccessPrevention: "enforced"
+      }
+    };
     const bucket = {
       name: "private-artifacts",
       file(name: string) {
@@ -38,7 +49,7 @@ describe("temporary Google PDF storage contract", () => {
         };
       },
       async getMetadata() { return [metadata]; },
-      async setMetadata(next: typeof metadata) { metadata = next; }
+      async setMetadata(next: Partial<typeof metadata>) { metadata = { ...metadata, ...next }; }
     } as unknown as Parameters<typeof createGoogleCloudPdfStorage>[0];
     const storage = createGoogleCloudPdfStorage(bucket);
 
@@ -48,5 +59,18 @@ describe("temporary Google PDF storage contract", () => {
     expect(uploaded.objectUri).toBe("gs://private-artifacts/" + uploaded.objectName);
     expect(saves[0].options).not.toMatchObject({ public: true });
     expect(metadata.lifecycle?.rule).toContainEqual(GOOGLE_TEMP_PDF_LIFECYCLE_RULE);
+  });
+
+  it("rejects a bucket without the required private-access controls", async () => {
+    const bucket = {
+      file() {
+        return { async save() {} };
+      },
+      async getMetadata() {
+        return [{ iamConfiguration: { uniformBucketLevelAccess: { enabled: false }, publicAccessPrevention: "inherited" } }];
+      }
+    } as unknown as Parameters<typeof createGoogleCloudPdfStorage>[0];
+
+    await expect(createGoogleCloudPdfStorage(bucket).ensureLifecycleRule?.()).rejects.toThrow("uniform access");
   });
 });
