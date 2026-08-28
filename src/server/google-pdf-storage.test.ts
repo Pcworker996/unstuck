@@ -26,7 +26,7 @@ describe("temporary Google PDF storage contract", () => {
     expect(randomGooglePdfObjectName(() => "another-id")).not.toBe(randomGooglePdfObjectName(() => "fixed-id"));
   });
 
-  it("configures lifecycle without exposing a public URL or original filename", async () => {
+  it("requires a private bucket with the configured lifecycle", async () => {
     const saves: Array<{ name: string; options: unknown }> = [];
     let metadata: {
       lifecycle?: { rule?: unknown[] };
@@ -35,6 +35,7 @@ describe("temporary Google PDF storage contract", () => {
         publicAccessPrevention: string;
       };
     } = {
+      lifecycle: { rule: [GOOGLE_TEMP_PDF_LIFECYCLE_RULE] },
       iamConfiguration: {
         uniformBucketLevelAccess: { enabled: true },
         publicAccessPrevention: "enforced"
@@ -49,7 +50,6 @@ describe("temporary Google PDF storage contract", () => {
         };
       },
       async getMetadata() { return [metadata]; },
-      async setMetadata(next: Partial<typeof metadata>) { metadata = { ...metadata, ...next }; }
     } as unknown as Parameters<typeof createGoogleCloudPdfStorage>[0];
     const storage = createGoogleCloudPdfStorage(bucket);
 

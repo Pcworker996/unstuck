@@ -15,10 +15,10 @@ The Cloud Run service requires `FIREBASE_PROJECT_ID` and
 `GOOGLE_TEMP_ARTIFACT_BUCKET`. Firebase Admin uses Application
 Default Credentials, so Cloud Run should run with a service account that can
 read/write Firestore `personalAccounts/{uid}/protocols/{protocolId}` documents
-and create/delete objects plus maintain the one-day lifecycle rule in the
-private temporary bucket. Grant `roles/datastore.user` and a least-privilege
-custom role containing `storage.buckets.get`, `storage.buckets.update`,
-`storage.objects.create`, and `storage.objects.delete`. The Firestore role is
+and create/delete objects plus verify the one-day lifecycle rule in the private
+temporary bucket. Grant `roles/datastore.user` and a least-privilege custom
+role containing `storage.buckets.get`, `storage.objects.create`,
+`storage.objects.get`, and `storage.objects.delete`. The Firestore role is
 project-scoped; Firebase Admin bypasses Firestore rules, so owner isolation is
 enforced by verified-token ownership and application-controlled document paths,
 not by IAM. Firebase ID-token

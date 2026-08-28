@@ -26,12 +26,7 @@ export function createGoogleCloudPdfStorage(bucket: GoogleCloudBucket): GooglePd
       Array.isArray(rule.condition.matchesPrefix) &&
       rule.condition.matchesPrefix.includes("unstuck/temporary-pdfs/")
     );
-    if (!hasRule) {
-      await bucket.setMetadata({ lifecycle: { rule: [...existingRules, {
-        action: { type: "Delete" },
-        condition: { age: 1, matchesPrefix: ["unstuck/temporary-pdfs/"] }
-      }] } });
-    }
+    if (!hasRule) throw new Error("The temporary PDF bucket must have the one-day lifecycle rule.");
     privateBucketVerified = true;
   };
   return {

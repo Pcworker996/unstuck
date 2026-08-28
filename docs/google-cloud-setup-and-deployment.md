@@ -122,7 +122,7 @@ gcloud iam service-accounts create unstuck-runtime \
 gcloud iam roles create unstuckArtifactStorage \
   --project="$PROJECT_ID" \
   --title="Unstuck temporary artifact storage" \
-  --permissions=storage.buckets.get,storage.buckets.update,storage.objects.create,storage.objects.get,storage.objects.delete \
+  --permissions=storage.buckets.get,storage.objects.create,storage.objects.get,storage.objects.delete \
   --stage=GA
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
   --member="serviceAccount:unstuck-runtime@$PROJECT_ID.iam.gserviceaccount.com" \
@@ -133,9 +133,9 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 ~~~
 
 The custom role is bound to this bucket rather than the project. It is needed
-because the runtime verifies and installs the lifecycle rule on first use and
-passes private `gs://` objects to Gemini for extraction. Do not grant the
-bucket public access. Use the same `$BUCKET` value as
+because the runtime verifies the lifecycle rule on first use and passes
+private `gs://` objects to Gemini for extraction. Do not grant the bucket
+public access. Use the same `$BUCKET` value as
 `GOOGLE_TEMP_ARTIFACT_BUCKET` below.
 
 ### Create the Docker repository
