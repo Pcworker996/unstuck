@@ -14,7 +14,7 @@ import {
   type GoogleSupportingArtifactInput,
   type GoogleSupportingArtifactProcessing
 } from "./google-supporting-artifacts";
-import { PIVOT_LIBRARY, type Pivot, type PivotKind } from "./pivot-protocol";
+import { PIVOT_LIBRARY, type Pivot, type PivotKind } from "./pivot-library";
 
 export type { GoogleImageArtifactInput } from "./google-image-artifact";
 export type { GoogleSupportingArtifactInput } from "./google-supporting-artifacts";

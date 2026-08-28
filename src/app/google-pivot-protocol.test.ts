@@ -6,7 +6,7 @@ import {
   type GooglePivotGenerator,
   type SituationMap
 } from "./google-pivot-protocol";
-import { PIVOT_LIBRARY } from "./pivot-protocol";
+import { PIVOT_LIBRARY } from "./pivot-library";
 
 const jpegBytes = () => new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 2, 0xff, 0xd9]);
 const pngBytes = () => {

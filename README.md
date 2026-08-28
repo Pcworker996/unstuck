@@ -26,11 +26,6 @@ accept an account ID from browser request data. Safety, consent, ownership,
 bounded Pivot selection, schema validation, persistence, and fallbacks remain
 application-owned.
 
-The legacy AWS/CockroachDB implementation remains in the repository during
-the migration. Its deployment instructions are in
-[docs/deployment.md](docs/deployment.md); new Google-native work should use
-the Google Cloud runtime described below.
-
 ## Google-native flow
 
 An authenticated person can:
@@ -98,6 +93,8 @@ The complete setup guide explains:
 - Verifying the Cloud Run service
 
 Read [docs/google-cloud-setup-and-deployment.md](docs/google-cloud-setup-and-deployment.md).
+Use only clearly labeled synthetic data for demos and evaluation; see
+[docs/synthetic-evaluation.md](docs/synthetic-evaluation.md).
 
 After one-time setup, the recurring release path is:
 
@@ -144,7 +141,6 @@ only inspects it.
 - src/app/ — Next.js pages, UI state, and route handlers.
 - src/server/ — authentication, Firestore persistence, Genkit adapter, and
   Pivot Protocol services.
-- db/ — legacy CockroachDB migrations and validation SQL.
 - docs/ — runtime, deployment, ADR, and research documentation.
 - firestore.rules — Firestore security rules.
 - Dockerfile — production container build.

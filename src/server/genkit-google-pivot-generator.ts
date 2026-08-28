@@ -8,7 +8,7 @@ import type {
   SituationMap
 } from "../app/google-pivot-protocol";
 import type { GooglePdfTemporaryStorage } from "../app/google-supporting-artifacts";
-import type { Pivot } from "../app/pivot-protocol";
+import type { Pivot } from "../app/pivot-library";
 import { GOOGLE_EMBEDDING_DIMENSIONS, GOOGLE_EMBEDDING_MODEL_ID, validateGoogleEmbedding } from "./google-memory";
 
 const mapItemSchema = z.object({

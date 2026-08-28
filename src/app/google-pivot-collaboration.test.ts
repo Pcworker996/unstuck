@@ -5,7 +5,7 @@ import {
   type GooglePivotGenerator,
   type GooglePivotGeneratorOutput
 } from "./google-pivot-protocol";
-import { PIVOT_LIBRARY } from "./pivot-protocol";
+import { PIVOT_LIBRARY } from "./pivot-library";
 
 function output(
   situationMap: GooglePivotGeneratorOutput["situationMap"],

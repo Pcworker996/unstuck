@@ -1,4 +1,4 @@
-import { PIVOT_LIBRARY, type PivotKind } from "../app/pivot-protocol";
+import { PIVOT_LIBRARY, type PivotKind } from "../app/pivot-library";
 import type { PivotOutcome } from "../app/google-pivot-protocol";
 
 export const GOOGLE_EMBEDDING_MODEL_ID = "gemini-embedding-001";
