@@ -11,7 +11,17 @@ The browser requires these Firebase web-app values:
 - `NEXT_PUBLIC_FIREBASE_PROJECT_ID`
 - `NEXT_PUBLIC_FIREBASE_APP_ID`
 
-The Cloud Run service requires `FIREBASE_PROJECT_ID`. Firebase Admin uses Application Default Credentials, so Cloud Run should run with a service account that can verify Firebase ID tokens and read/write the Firestore `personalAccounts/{uid}/protocols/{protocolId}` documents. For local development, provide Google Application Default Credentials through the standard `GOOGLE_APPLICATION_CREDENTIALS` mechanism.
+The Cloud Run service requires `FIREBASE_PROJECT_ID` and, when PDF review is
+enabled, `GOOGLE_TEMP_ARTIFACT_BUCKET`. Firebase Admin uses Application
+Default Credentials, so Cloud Run should run with a service account that can
+read/write Firestore `personalAccounts/{uid}/protocols/{protocolId}` documents
+and create/delete objects plus maintain the one-day lifecycle rule in the
+private temporary bucket. Grant `roles/datastore.user` and a least-privilege
+custom role containing `storage.buckets.get`, `storage.buckets.update`,
+`storage.objects.create`, and `storage.objects.delete`. Firebase ID-token
+verification uses Google's public signing keys and does not require a separate
+IAM role. For local development, provide Google Application Default
+Credentials through the standard `GOOGLE_APPLICATION_CREDENTIALS` mechanism.
 
 Enable Google as a Firebase Authentication provider and configure its authorized domains before using the sign-in flow. The browser sends its Firebase ID token as a bearer token; the server derives the owner from the verified token and never accepts an account ID from the request.
 
@@ -27,3 +37,9 @@ Vertex AI User role (`roles/aiplatform.user`). Configure
 `VERTEX_GEMINI_MODEL_ID` (default `gemini-3.5-flash`). Genkit uses Application
 Default Credentials locally and the attached Cloud Run service account in
 production.
+
+The temporary bucket must use public access prevention, must not grant
+`allUsers` or `allAuthenticatedUsers` access, and must apply the lifecycle
+configuration in `storage-lifecycle.json`. The application only returns an
+internal `gs://` object reference and deletes each object after extraction;
+the one-day lifecycle rule is the cleanup backstop.

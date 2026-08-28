@@ -18,7 +18,6 @@ export function createGoogleCloudPdfStorage(bucket: GoogleCloudBucket): GooglePd
       const objectName = randomGooglePdfObjectName();
       await bucket.file(objectName).save(Buffer.from(bytes), {
         resumable: false,
-        predefinedAcl: "private",
         metadata: { contentType: "application/pdf", cacheControl: "no-store" }
       });
       return { objectName, objectUri: `gs://${bucket.name}/${objectName}` };
