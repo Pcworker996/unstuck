@@ -486,7 +486,8 @@ export type GooglePivotCommandResult =
   | { kind: "ok"; state: Extract<GooglePivotResult, { kind: "pivot-protocol" }> }
   | { kind: "consent-required" }
   | { kind: "safety-interruption"; result: Extract<GooglePivotResult, { kind: "safety-interruption" }> }
-  | { kind: "invalid-command"; message: string };
+  | { kind: "invalid-command"; message: string }
+  | { kind: "dependency-unavailable"; message: string; state: Extract<GooglePivotResult, { kind: "pivot-protocol" }> };
 
 export async function runGooglePivotCommand(
   current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined,
@@ -559,14 +560,22 @@ export async function runGooglePivotCommand(
     if (command.type !== "exclude-memory" && !adaptation) {
       return { kind: "invalid-command", message: "Memory controls are unavailable." };
     }
-    if (command.type === "exclude-memory" && adaptation?.excludeMemory && !(await adaptation.excludeMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
-      return { kind: "invalid-command", message: "That memory could not be excluded." };
-    }
-    if (command.type === "forget-memory" && adaptation?.forgetMemory && !(await adaptation.forgetMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
-      return { kind: "invalid-command", message: "That memory could not be forgotten." };
-    }
-    if (command.type === "delete-memory" && adaptation?.deleteMemory && !(await adaptation.deleteMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
-      return { kind: "invalid-command", message: "That memory could not be deleted." };
+    try {
+      if (command.type === "exclude-memory" && adaptation?.excludeMemory && !(await adaptation.excludeMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
+        return { kind: "invalid-command", message: "That memory could not be excluded." };
+      }
+      if (command.type === "forget-memory" && adaptation?.forgetMemory && !(await adaptation.forgetMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
+        return { kind: "invalid-command", message: "That memory could not be forgotten." };
+      }
+      if (command.type === "delete-memory" && adaptation?.deleteMemory && !(await adaptation.deleteMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
+        return { kind: "invalid-command", message: "That memory could not be deleted." };
+      }
+    } catch {
+      return {
+        kind: "dependency-unavailable",
+        message: "Memory controls are temporarily unavailable; the current Situation map was preserved.",
+        state: current
+      };
     }
     const nextExcluded = [...new Set([...current.excludedMemoryIds, command.memoryId])];
     if (!adaptation) {

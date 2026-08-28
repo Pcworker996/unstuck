@@ -218,7 +218,7 @@ export async function runGoogleProtocolCommand(
   const current = existing.pivotState && isPivotState(existing.pivotState)
     ? normalizePivotState(existing.pivotState)
     : undefined;
-  if (dependencies.quota) {
+  if (dependencies.quota && mayUsePlatform(input.command, current, Boolean(dependencies.adaptation))) {
     const reservation = quotaReservation(input.command, current);
     try {
       const quota = await dependencies.quota.reserve({
@@ -310,6 +310,32 @@ function quotaReservation(command: GooglePivotCommand, current: Extract<GooglePi
     ? (command.image ? 1 : 0) + (command.artifacts?.length ?? 0)
     : command.type === "add-image" ? 1 : command.type === "add-artifact" ? 1 : command.type === "add-artifacts" ? command.artifacts.length : 0;
   return { modelUnits: 1 + artifactUnits, artifactUnits };
+}
+
+function mayUsePlatform(command: GooglePivotCommand, current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined, hasAdaptation: boolean): boolean {
+  if (command.type === "start") return !current;
+  if (!current) return false;
+  if (command.type === "add-image") return current.imageProcessing.status !== "accepted" && isEditablePhase(current.phase);
+  if (command.type === "add-artifact" || command.type === "add-artifacts") return isEditablePhase(current.phase);
+  if (command.type === "answer-clarification" || command.type === "skip-clarification") {
+    return current.phase === "clarifying" && current.clarification?.question.id === command.questionId && current.clarification.answers.length < 2 && (command.type === "skip-clarification" || Boolean(command.answer.trim()));
+  }
+  if (command.type === "correct-map") {
+    return isEditablePhase(current.phase) && Boolean(command.text.trim()) && current.situationMap[command.section].some((item) => item.id === command.itemId);
+  }
+  if (command.type === "resolve-contradiction") {
+    return isEditablePhase(current.phase) && current.situationMap.contradictions.some((item) => item.id === command.itemId);
+  }
+  if (command.type === "regenerate-pivot") return current.phase === "recommended" && Boolean(current.recommendation);
+  if (command.type === "exclude-memory" || command.type === "forget-memory" || command.type === "delete-memory") {
+    return hasAdaptation && current.memoryExplanations.some((memory) => memory.memoryId === command.memoryId);
+  }
+  if (command.type === "record-outcome") return current.phase === "selected" && Boolean(current.selectedPivot) && (!command.outcome.pivotTimeSeconds || (Number.isInteger(command.outcome.pivotTimeSeconds) && command.outcome.pivotTimeSeconds >= 0));
+  return false;
+}
+
+function isEditablePhase(phase: Extract<GooglePivotResult, { kind: "pivot-protocol" }>["phase"]): boolean {
+  return phase === "clarifying" || phase === "recommended";
 }
 
 function stateAfterPersistenceFailure(state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
