@@ -371,6 +371,26 @@ describe("Google Protocol", () => {
       .resolves.toMatchObject({ kind: "protocol", protocol: { version: 0 } });
   });
 
+  it("does not reserve quota before the consent gate", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-28T12:00:00.000Z" }
+    );
+    let reservations = 0;
+    const result = await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-1", expectedVersion: 0, idempotencyKey: "no-consent",
+      command: { type: "start", quickDump: "I am stuck.", consentGiven: false }
+    }, {
+      repository,
+      quota: { async reserve() { reservations += 1; return { allowed: true, modelUsed: 0, artifactUsed: 0 }; } },
+      now: () => "2026-08-28T12:00:00.000Z"
+    });
+
+    expect(result).toEqual({ kind: "consent-required" });
+    expect(reservations).toBe(0);
+  });
+
   it("keeps a valid generated state visible when its Firestore write fails", async () => {
     const baseRepository = createInMemoryGoogleProtocolRepository();
     await startGoogleProtocol(

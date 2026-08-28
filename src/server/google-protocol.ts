@@ -315,7 +315,7 @@ function quotaReservation(command: GooglePivotCommand, current: Extract<GooglePi
 }
 
 function mayUsePlatform(command: GooglePivotCommand, current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined, hasAdaptation: boolean): boolean {
-  if (command.type === "start") return !current;
+  if (command.type === "start") return !current && command.consentGiven;
   if (!current) return false;
   if (command.type === "add-image") return current.imageProcessing.status !== "accepted" && isEditablePhase(current.phase);
   if (command.type === "add-artifact" || command.type === "add-artifacts") return isEditablePhase(current.phase);
