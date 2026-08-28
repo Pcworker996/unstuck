@@ -147,6 +147,7 @@ export function GoogleHome() {
         />
       ) : null}
       <GoogleSavedHistory refreshKey={historyRefresh} />
+      <GoogleGuidancePreferences />
     </main>
   );
 }
@@ -365,6 +366,18 @@ function GooglePivotResultView({
           <p className="privacy-note">Question {result.clarification.answers.length + 1} of 2. You can continue without answering.</p>
         </section>
       ) : null}
+      {result.memoryExplanations?.length ? (
+        <section className="history-card" aria-label="Memory explanations">
+          <p className="eyebrow">Why this was adapted</p>
+          {result.memoryExplanations.map((memory) => (
+            <p key={memory.memoryId}>
+              {memory.text} <a href={`#saved-check-in-${encodeURIComponent(memory.protocolId)}`}>Inspect saved Check-in</a> <button className="text-button" onClick={() => void command({ type: "exclude-memory", memoryId: memory.memoryId })} type="button">Exclude before regenerating</button>
+              <button className="text-button" onClick={() => void command({ type: "forget-memory", memoryId: memory.memoryId })} type="button">Forget</button>
+              <button className="text-button" onClick={() => void command({ type: "delete-memory", memoryId: memory.memoryId })} type="button">Delete memory</button>
+            </p>
+          ))}
+        </section>
+      ) : null}
       {result.phase !== "clarifying" && result.phase !== "dismissed" && recommendation ? (
         <section className="pivot-card" aria-labelledby="google-pivot-heading">
           <p className="eyebrow">{result.phase === "outcome" ? "Pivot outcome" : "Recommended Pivot"}</p>
@@ -372,6 +385,7 @@ function GooglePivotResultView({
           <p>{recommendation.primary.instruction}</p>
           <p className="pivot-explanation">{recommendation.whyThisPivot}</p>
           {result.fallback ? <p className="privacy-note">A curated fallback is keeping your accepted Situation map available.</p> : null}
+          {result.adaptationStatus === "unavailable" ? <p className="privacy-note">Personalization is temporarily unavailable; this recommendation uses only the current Situation map.</p> : null}
           <div className="alternatives">
             <h3>Two other options</h3>
             {recommendation.alternatives.map((pivot) => <p key={pivot.id}>{pivot.title}</p>)}
@@ -392,7 +406,7 @@ function GooglePivotResultView({
               <p>{result.persistence === "saved"
                 ? result.enrichment === "saved"
                   ? "Your selected Pivot, outcome, Situation map, and compact Derived memory are available in Saved Check-ins."
-                  : "Your selected Pivot, outcome, Situation map, and the last approved Derived memory are saved. Adaptation is temporarily unavailable, so the memory was not updated."
+                  : "Your selected Pivot, outcome, and Situation map are saved. The Derived memory was not retained because personalization is temporarily unavailable."
                 : "Only this session shows the result; it will not become personal history."}</p>
               {result.derivedMemory ? <p><strong>Derived memory:</strong> {result.derivedMemory.context}</p> : null}
             </section>
@@ -472,7 +486,7 @@ function GoogleSavedHistory({ refreshKey }: { refreshKey: number }) {
             const state = history.pivotState;
             if (!state) return null;
             return (
-              <li key={history.id}>
+              <li id={`saved-check-in-${encodeURIComponent(history.id)}`} key={history.id}>
                 <p><strong>{state.outcome?.status}</strong>{state.outcome?.agencyShift ? ` · ${state.outcome.agencyShift}` : ""}</p>
                 <span>{state.checkIn.quickDump}</span>
                 <details>
@@ -487,6 +501,58 @@ function GoogleSavedHistory({ refreshKey }: { refreshKey: number }) {
           })}
         </ul>
       )}
+    </section>
+  );
+}
+
+function GoogleGuidancePreferences() {
+  const [preferences, setPreferences] = useState<{ id: string; text: string }[]>([]);
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    googleApiRequest<{ preferences: { id: string; text: string }[] }>("/api/google/preferences")
+      .then((response) => setPreferences(response.preferences))
+      .catch((requestError: unknown) => setError(requestError instanceof Error ? requestError.message : "Guidance preferences are unavailable."));
+  }, []);
+
+  async function addPreference(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const response = await googleApiRequest<{ preference: { id: string; text: string } }>("/api/google/preferences", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      setPreferences((current) => [...current, response.preference]);
+      setText("");
+      setError(undefined);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The Guidance preference could not be saved.");
+    }
+  }
+
+  async function removePreference(id: string) {
+    try {
+      await googleApiRequest(`/api/google/preferences/${encodeURIComponent(id)}`, { method: "DELETE" });
+      setPreferences((current) => current.filter((preference) => preference.id !== id));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "The Guidance preference could not be deleted.");
+    }
+  }
+
+  return (
+    <section className="history-card" aria-labelledby="guidance-preferences-heading">
+      <p className="eyebrow">Guidance preferences</p>
+      <h2 id="guidance-preferences-heading">How should support adapt?</h2>
+      <p className="patterns-card__description">These are explicit choices, not inferred traits. You can remove them anytime.</p>
+      <form onSubmit={addPreference}>
+        <label htmlFor="guidance-preference">Add a preference</label>
+        <input id="guidance-preference" value={text} onChange={(event) => setText(event.target.value)} placeholder="Prefer concrete steps" required maxLength={240} />
+        <button type="submit">Save preference</button>
+      </form>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {preferences.map((preference) => <p key={preference.id}>{preference.text} <button className="text-button" onClick={() => void removePreference(preference.id)} type="button">Delete</button></p>)}
     </section>
   );
 }

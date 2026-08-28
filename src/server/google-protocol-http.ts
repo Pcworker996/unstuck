@@ -91,7 +91,7 @@ export async function handleGoogleProtocolList(
 
 export async function handleGoogleSavedHistoryGet(
   request: Request,
-  dependencies: Pick<GoogleProtocolDependencies, "repository">,
+  dependencies: Pick<GoogleProtocolDependencies, "repository" | "adaptation">,
   authenticate: GoogleRequestAuthenticator
 ): Promise<Response> {
   try {
@@ -106,7 +106,7 @@ export async function handleGoogleSavedHistoryGet(
 export async function handleGoogleSavedHistoryDelete(
   request: Request,
   protocolId: string,
-  dependencies: Pick<GoogleProtocolDependencies, "repository">,
+  dependencies: Pick<GoogleProtocolDependencies, "repository" | "adaptation">,
   authenticate: GoogleRequestAuthenticator
 ): Promise<Response> {
   try {

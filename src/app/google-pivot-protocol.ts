@@ -54,6 +54,28 @@ export type GoogleDerivedMemory = {
   approved: true;
 };
 
+export type GoogleRetrievedMemory = {
+  id: string;
+  protocolId: string;
+  context: string;
+  selectedPivotKind: PivotKind;
+  selectedPivotTitle: string;
+  outcome: PivotOutcome;
+  approved: true;
+};
+
+export type GoogleGuidancePreference = {
+  id: string;
+  text: string;
+  createdAt: string;
+};
+
+export type GoogleMemoryExplanation = {
+  memoryId: string;
+  protocolId: string;
+  text: string;
+};
+
 export type GooglePersistenceStatus = "unsaved" | "pending" | "saved";
 export type GoogleEnrichmentStatus = "not-requested" | "saved" | "unavailable";
 
@@ -91,6 +113,12 @@ export type GooglePivotGenerator = {
     situationMap: SituationMap;
     clarificationAnswers?: ClarificationAnswer[];
   }) => Promise<unknown>;
+  adapt?: (input: {
+    situationMap: SituationMap;
+    currentDerivedContext: string;
+    retrievedMemories: readonly GoogleRetrievedMemory[];
+    guidancePreferences: readonly GoogleGuidancePreference[];
+  }) => Promise<unknown>;
   repair?: (input: {
     quickDump: string;
     situationMap: SituationMap;
@@ -103,6 +131,25 @@ export type GooglePivotGenerator = {
     selectedPivot: Pivot;
     outcome: PivotOutcome;
   }) => Promise<string>;
+};
+
+export type GooglePivotAdaptation = {
+  ownerSubject: string;
+  embed: (text: string) => Promise<readonly number[]>;
+  retrieveSimilarMemories: (input: {
+    ownerSubject: string;
+    queryEmbedding: readonly number[];
+    limit: number;
+    threshold: number;
+    excludedMemoryIds: readonly string[];
+  }) => Promise<readonly GoogleRetrievedMemory[]>;
+  listGuidancePreferences: (ownerSubject: string) => Promise<readonly GoogleGuidancePreference[]>;
+  excludeMemory?: (input: { ownerSubject: string; memoryId: string }) => Promise<boolean>;
+  forgetMemory?: (input: { ownerSubject: string; memoryId: string }) => Promise<boolean>;
+  deleteMemory?: (input: { ownerSubject: string; memoryId: string }) => Promise<boolean>;
+  threshold?: number;
+  limit?: number;
+  excludedMemoryIds?: readonly string[];
 };
 
 export type GooglePivotPhase = "clarifying" | "recommended" | "selected" | "outcome" | "dismissed";
@@ -132,6 +179,12 @@ export type GooglePivotResult =
       enrichment: GoogleEnrichmentStatus;
       pendingDerivedContext?: string;
       derivedMemory?: GoogleDerivedMemory;
+      memoryExplanations: GoogleMemoryExplanation[];
+      retrievedMemories: GoogleRetrievedMemory[];
+      retrievalAttempted: boolean;
+      adaptationStatus: "not-requested" | "personalized" | "no-match" | "unavailable";
+      excludedMemoryIds: string[];
+      guidancePreferenceIds: string[];
       recommendation?: {
         primary: Pivot;
         alternatives: Pivot[];
@@ -164,7 +217,8 @@ export function googlePivotSafetyResult(
 
 export async function runGooglePivotProtocol(
   input: { quickDump: string; consentGiven: boolean; saveRequested?: boolean },
-  generator: GooglePivotGenerator = defaultGenerator
+  generator: GooglePivotGenerator = defaultGenerator,
+  adaptation?: GooglePivotAdaptation
 ): Promise<GooglePivotResult> {
   const quickDump = input.quickDump.trim();
   const safetyResult = googlePivotSafetyResult(quickDump);
@@ -225,15 +279,34 @@ export async function runGooglePivotProtocol(
 
   let saveRequested = input.saveRequested ?? false;
   let pendingDerivedContext: string | undefined;
-  if (saveRequested) {
+  if (saveRequested || adaptation) {
     try {
       const context = await (generator.prepareMemory?.({ situationMap }) ?? Promise.resolve(defaultPendingMemory(situationMap)));
       validateDerivedMemoryContext(context);
       pendingDerivedContext = context;
     } catch {
-      saveRequested = false;
-      activity.push({ kind: "fallback", message: "Saving is temporarily unavailable; this Check-in can continue without being retained." });
+      if (saveRequested) saveRequested = false;
+      if (adaptation) activity.push({ kind: "fallback", message: "Personalization is temporarily unavailable; the current Situation map is preserved." });
+      else activity.push({ kind: "fallback", message: "Saving is temporarily unavailable; this Check-in can continue without being retained." });
     }
+  }
+
+  const adapted = adaptation && pendingDerivedContext
+    ? await adaptOutput({
+      situationMap: output.situationMap,
+        baseOutput: output,
+        currentDerivedContext: pendingDerivedContext,
+        generator,
+        adaptation
+      })
+    : { output, status: adaptation ? "unavailable" as const : "not-requested" as const, explanations: [], preferenceIds: [], memories: [], retrievalAttempted: false };
+  if (adapted.output !== output) {
+    output = adapted.output;
+    activity.push({ kind: "generation", message: "The Situation map and recommendation adapted from approved context." });
+  }
+  if (adapted.status === "unavailable") {
+    fallback = true;
+    activity.push({ kind: "fallback", message: "Personalization is unavailable; the accepted Situation map remains usable." });
   }
 
   return {
@@ -243,7 +316,7 @@ export async function runGooglePivotProtocol(
     saveRequested,
     persistence: saveRequested ? "pending" : "unsaved",
     enrichment: "not-requested",
-    ...(pendingDerivedContext ? { pendingDerivedContext } : {}),
+    ...(pendingDerivedContext && saveRequested ? { pendingDerivedContext } : {}),
     phase: output.clarificationQuestion ? "clarifying" : "recommended",
     situationMap: output.situationMap,
     ...(output.clarificationQuestion
@@ -251,6 +324,12 @@ export async function runGooglePivotProtocol(
       : {}),
     revisions: [],
     ...(output.clarificationQuestion ? {} : { recommendation: recommendationFromOutput(output) }),
+    memoryExplanations: adapted.explanations,
+    retrievedMemories: adapted.memories,
+    retrievalAttempted: adapted.retrievalAttempted,
+    adaptationStatus: adapted.status,
+    excludedMemoryIds: [],
+    guidancePreferenceIds: adapted.preferenceIds,
     activity,
     fallback
   };
@@ -270,6 +349,9 @@ export type GooglePivotCommand =
   | { type: "select-pivot"; pivotKind: string }
   | { type: "regenerate-pivot" }
   | { type: "dismiss-pivot" }
+  | { type: "exclude-memory"; memoryId: string }
+  | { type: "forget-memory"; memoryId: string }
+  | { type: "delete-memory"; memoryId: string }
   | { type: "record-outcome"; outcome: PivotOutcome };
 
 export type GooglePivotCommandResult =
@@ -281,14 +363,15 @@ export type GooglePivotCommandResult =
 export async function runGooglePivotCommand(
   current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined,
   command: GooglePivotCommand,
-  generator: GooglePivotGenerator = defaultGenerator
+  generator: GooglePivotGenerator = defaultGenerator,
+  adaptation?: GooglePivotAdaptation
 ): Promise<GooglePivotCommandResult> {
   if (command.type === "start") {
     if (current) {
       return { kind: "invalid-command", message: "This protocol has already started." };
     }
 
-    const result = await runGooglePivotProtocol(command, generator);
+    const result = await runGooglePivotProtocol(command, generator, adaptation);
     if (result.kind === "pivot-protocol") return { kind: "ok", state: result };
     if (result.kind === "consent-required") return result;
     return { kind: "safety-interruption", result };
@@ -299,11 +382,11 @@ export async function runGooglePivotCommand(
   }
 
   if (command.type === "answer-clarification" || command.type === "skip-clarification") {
-    return answerClarification(current, command, generator);
+    return answerClarification(current, command, generator, adaptation);
   }
 
   if (command.type === "correct-map") {
-    return correctMap(current, command, generator);
+    return correctMap(current, command, generator, adaptation);
   }
 
   if (command.type === "resolve-contradiction") {
@@ -311,7 +394,51 @@ export async function runGooglePivotCommand(
     if (!current.situationMap.contradictions.some((item) => item.id === command.itemId)) {
       return { kind: "invalid-command", message: "That contradiction no longer exists." };
     }
-    return resolveContradiction(current, command, generator);
+    return resolveContradiction(current, command, generator, adaptation);
+  }
+
+  if (command.type === "exclude-memory" || command.type === "forget-memory" || command.type === "delete-memory") {
+    if (!current.memoryExplanations.some((memory) => memory.memoryId === command.memoryId)) {
+      return { kind: "invalid-command", message: "That memory is not influencing this protocol." };
+    }
+    if (command.type !== "exclude-memory" && !adaptation) {
+      return { kind: "invalid-command", message: "Memory controls are unavailable." };
+    }
+    if (command.type === "exclude-memory" && adaptation?.excludeMemory && !(await adaptation.excludeMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
+      return { kind: "invalid-command", message: "That memory could not be excluded." };
+    }
+    if (command.type === "forget-memory" && adaptation?.forgetMemory && !(await adaptation.forgetMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
+      return { kind: "invalid-command", message: "That memory could not be forgotten." };
+    }
+    if (command.type === "delete-memory" && adaptation?.deleteMemory && !(await adaptation.deleteMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
+      return { kind: "invalid-command", message: "That memory could not be deleted." };
+    }
+    const nextExcluded = [...new Set([...current.excludedMemoryIds, command.memoryId])];
+    if (!adaptation) {
+      return { kind: "ok", state: { ...current, excludedMemoryIds: nextExcluded, memoryExplanations: current.memoryExplanations.filter((memory) => memory.memoryId !== command.memoryId) } };
+    }
+    const nextAdaptation = { ...adaptation, excludedMemoryIds: nextExcluded };
+    const nextSituationMap = removeMemoryPatterns(current.situationMap, nextExcluded);
+    const generation = await generateAdaptedOutput(current.checkIn.quickDump, nextSituationMap, generator, current.clarification?.answers, nextAdaptation, current.retrievalAttempted ? current.retrievedMemories : undefined);
+    return {
+      kind: "ok",
+      state: {
+        ...current,
+        phase: "recommended",
+        selectedPivot: undefined,
+        outcome: undefined,
+        situationMap: preserveAcceptedMapItems(generation.output.situationMap, nextSituationMap, current.revisions),
+        recommendation: recommendationFromOutput(generation.output),
+        excludedMemoryIds: nextExcluded,
+        memoryExplanations: generation.explanations,
+        retrievedMemories: generation.memories,
+        retrievalAttempted: generation.retrievalAttempted,
+        guidancePreferenceIds: generation.preferenceIds,
+        adaptationStatus: generation.status,
+        fallback: current.fallback || generation.fallback,
+        activity: [...current.activity, { kind: "recommendation-regenerated", message: command.type === "exclude-memory" ? "The excluded memory no longer informs this recommendation." : "The removed memory no longer informs this recommendation." }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Personalization is unavailable; the accepted Situation map remains usable." }] : [])]
+      }
+    };
   }
 
   if (command.type === "select-pivot") {
@@ -340,11 +467,13 @@ export async function runGooglePivotCommand(
     if (current.phase !== "recommended" || !current.recommendation) {
       return { kind: "invalid-command", message: "A recommendation must be available first." };
     }
-    const generation = await generateValidatedOutput(
+    const generation = await generateAdaptedOutput(
       current.checkIn.quickDump,
       current.situationMap,
       generator,
-      current.clarification?.answers
+      current.clarification?.answers,
+      adaptationForState(adaptation, current),
+      current.retrievalAttempted ? current.retrievedMemories : undefined
     );
     const output = generation.output;
     const generatedRecommendation = recommendationFromOutput(output);
@@ -360,6 +489,11 @@ export async function runGooglePivotCommand(
         situationMap: preserveAcceptedMapItems(output.situationMap, current.situationMap, current.revisions),
         recommendation,
         outcome: undefined,
+        memoryExplanations: generation.explanations,
+        retrievedMemories: generation.memories,
+        retrievalAttempted: generation.retrievalAttempted,
+        adaptationStatus: generation.status,
+        guidancePreferenceIds: generation.preferenceIds,
         fallback: current.fallback || generation.fallback,
         activity: [...current.activity, {
           kind: "recommendation-regenerated",
@@ -474,7 +608,8 @@ async function recordOutcome(
 async function answerClarification(
   current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
   command: Extract<GooglePivotCommand, { type: "answer-clarification" | "skip-clarification" }>,
-  generator: GooglePivotGenerator
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
 ): Promise<GooglePivotCommandResult> {
   if (current.phase !== "clarifying" || !current.clarification) {
     return { kind: "invalid-command", message: "There is no clarification question waiting for an answer." };
@@ -504,7 +639,7 @@ async function answerClarification(
         ]
       }
     : current.situationMap;
-  const generation = await generateValidatedOutput(current.checkIn.quickDump, situationMap, generator, clarificationAnswers);
+  const generation = await generateAdaptedOutput(current.checkIn.quickDump, situationMap, generator, clarificationAnswers, adaptationForState(adaptation, current), current.retrievalAttempted ? current.retrievedMemories : undefined);
   const output = generation.output;
   const nextQuestion = clarificationAnswers.length < 2 ? output.clarificationQuestion : undefined;
   const event: ActivityEvent = {
@@ -529,6 +664,11 @@ async function answerClarification(
         answers: clarificationAnswers
       },
       fallback: current.fallback || generation.fallback,
+      memoryExplanations: generation.explanations,
+      retrievedMemories: generation.memories,
+      retrievalAttempted: generation.retrievalAttempted,
+      adaptationStatus: generation.status,
+      guidancePreferenceIds: generation.preferenceIds,
       activity: [...current.activity, event, ...(nextQuestion ? [{ kind: "clarification-question" as const, message: "One clarification question is ready." }] : [{ kind: "generation" as const, message: "The recommendation was updated from the clarification." }]), ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
     }
   };
@@ -537,17 +677,20 @@ async function answerClarification(
 async function resolveContradiction(
   current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
   command: Extract<GooglePivotCommand, { type: "resolve-contradiction" }>,
-  generator: GooglePivotGenerator
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
 ): Promise<GooglePivotCommandResult> {
   const situationMap = {
     ...current.situationMap,
     contradictions: current.situationMap.contradictions.filter((item) => item.id !== command.itemId)
   };
-  const generation = await generateValidatedOutput(
+  const generation = await generateAdaptedOutput(
     current.checkIn.quickDump,
     situationMap,
     generator,
-    current.clarification?.answers
+    current.clarification?.answers,
+    adaptationForState(adaptation, current),
+    current.retrievalAttempted ? current.retrievedMemories : undefined
   );
   const situationMapAfterResolution = preserveAcceptedMapItems(
     generation.output.situationMap,
@@ -563,6 +706,11 @@ async function resolveContradiction(
       situationMap: situationMapAfterResolution,
       ...(current.phase === "recommended" ? { recommendation: recommendationFromOutput(generation.output) } : { recommendation: undefined }),
       fallback: current.fallback || generation.fallback,
+      memoryExplanations: generation.explanations,
+      retrievedMemories: generation.memories,
+      retrievalAttempted: generation.retrievalAttempted,
+      adaptationStatus: generation.status,
+      guidancePreferenceIds: generation.preferenceIds,
       activity: [...current.activity, {
         kind: "contradiction-resolved",
         message: "The person resolved a Situation-map contradiction and the recommendation was updated."
@@ -574,7 +722,8 @@ async function resolveContradiction(
 async function correctMap(
   current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
   command: Extract<GooglePivotCommand, { type: "correct-map" }>,
-  generator: GooglePivotGenerator
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
 ): Promise<GooglePivotCommandResult> {
   const text = command.text.trim();
   if (!text) {
@@ -592,7 +741,7 @@ async function correctMap(
       ? { ...candidate, text }
       : candidate)
   };
-  const generation = await generateValidatedOutput(current.checkIn.quickDump, situationMap, generator, current.clarification?.answers);
+  const generation = await generateAdaptedOutput(current.checkIn.quickDump, situationMap, generator, current.clarification?.answers, adaptationForState(adaptation, current), current.retrievalAttempted ? current.retrievedMemories : undefined);
   const output = generation.output;
   const revision: MapRevision = {
     section: command.section,
@@ -613,6 +762,11 @@ async function correctMap(
       selectedPivot: undefined,
       outcome: undefined,
       fallback: current.fallback || generation.fallback,
+      memoryExplanations: generation.explanations,
+      retrievedMemories: generation.memories,
+      retrievalAttempted: generation.retrievalAttempted,
+      adaptationStatus: generation.status,
+      guidancePreferenceIds: generation.preferenceIds,
       revisions: [
         ...current.revisions,
         revision
@@ -646,6 +800,201 @@ async function generateValidatedOutput(
     }
     return { output: fallbackOutput(quickDump, situationMap), fallback: true };
   }
+}
+
+function adaptationForState(
+  adaptation: GooglePivotAdaptation | undefined,
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
+): GooglePivotAdaptation | undefined {
+  return adaptation ? { ...adaptation, excludedMemoryIds: state.excludedMemoryIds } : undefined;
+}
+
+async function generateAdaptedOutput(
+  quickDump: string,
+  situationMap: SituationMap,
+  generator: GooglePivotGenerator,
+  clarificationAnswers: ClarificationAnswer[] | undefined,
+  adaptation: GooglePivotAdaptation | undefined,
+  reuseMemories?: readonly GoogleRetrievedMemory[]
+): Promise<{
+  output: GooglePivotGeneratorOutput;
+  fallback: boolean;
+  status: "not-requested" | "personalized" | "no-match" | "unavailable";
+  explanations: GoogleMemoryExplanation[];
+  preferenceIds: string[];
+  memories: GoogleRetrievedMemory[];
+  retrievalAttempted: boolean;
+}> {
+  const generated = await generateValidatedOutput(quickDump, situationMap, generator, clarificationAnswers);
+  if (!adaptation) {
+    return { ...generated, status: "not-requested", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: false };
+  }
+
+  let currentDerivedContext: string;
+  try {
+    currentDerivedContext = validateDerivedMemoryContext(
+      await (generator.prepareMemory?.({ situationMap }) ?? Promise.resolve(defaultPendingMemory(situationMap)))
+    );
+  } catch {
+    return {
+      ...generated,
+      fallback: true,
+      status: "unavailable",
+      explanations: [],
+      preferenceIds: [],
+      memories: [],
+      retrievalAttempted: false
+    };
+  }
+
+  const adapted = await adaptOutput({
+    situationMap: generated.output.situationMap,
+    baseOutput: generated.output,
+    currentDerivedContext,
+    generator,
+    adaptation,
+    reuseMemories
+  });
+  return {
+    output: adapted.output,
+    fallback: generated.fallback || adapted.status === "unavailable",
+    status: adapted.status,
+    explanations: adapted.explanations,
+    preferenceIds: adapted.preferenceIds,
+    memories: adapted.memories,
+    retrievalAttempted: adapted.retrievalAttempted
+  };
+}
+
+async function adaptOutput({
+  situationMap,
+  baseOutput,
+  currentDerivedContext,
+  generator,
+  adaptation,
+  reuseMemories
+}: {
+  situationMap: SituationMap;
+  baseOutput: GooglePivotGeneratorOutput;
+  currentDerivedContext: string;
+  generator: GooglePivotGenerator;
+  adaptation: GooglePivotAdaptation;
+  reuseMemories?: readonly GoogleRetrievedMemory[];
+}): Promise<{
+  output: GooglePivotGeneratorOutput;
+  status: "personalized" | "no-match" | "unavailable";
+  explanations: GoogleMemoryExplanation[];
+  preferenceIds: string[];
+  memories: GoogleRetrievedMemory[];
+  retrievalAttempted: boolean;
+}> {
+  try {
+    const excludedMemoryIds = adaptation.excludedMemoryIds ?? [];
+    const retrieved = reuseMemories ?? await adaptation.retrieveSimilarMemories({
+      ownerSubject: adaptation.ownerSubject,
+      queryEmbedding: validateGoogleEmbedding(await adaptation.embed(currentDerivedContext)),
+      limit: Math.min(adaptation.limit ?? 3, 3),
+      threshold: adaptation.threshold ?? 0.5,
+      excludedMemoryIds
+    });
+    const memories = retrieved
+      .filter((memory) => memory.approved === true && !excludedMemoryIds.includes(memory.id))
+      .slice(0, 3);
+    const guidancePreferences = [...await adaptation.listGuidancePreferences(adaptation.ownerSubject)];
+    const explanations = memories.map((memory) => ({
+      memoryId: memory.id,
+      protocolId: memory.protocolId,
+      text: `A saved Check-in used “${memory.selectedPivotTitle}” and was marked ${memory.outcome.status}.`
+    }));
+    if (memories.length === 0 && guidancePreferences.length === 0) {
+      return { output: baseOutput, status: "no-match", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: true };
+    }
+
+  const adaptedOutput = generator.adapt
+      ? await generator.adapt({
+          situationMap: adaptationMap(situationMap),
+          currentDerivedContext,
+          retrievedMemories: memories,
+          guidancePreferences
+        })
+      : fallbackAdaptation(situationMap, memories, guidancePreferences);
+    const output = validatedGeneratedOutput(adaptedOutput, situationMap);
+    const preservedMap = preserveAcceptedMapItems(output.situationMap, situationMap, []);
+    return {
+      output: {
+        ...output,
+        situationMap: addPriorPatternItems(preservedMap, explanations)
+      },
+      status: "personalized",
+      explanations,
+      preferenceIds: guidancePreferences.map((preference) => preference.id),
+      memories: [...memories],
+      retrievalAttempted: true
+    };
+  } catch {
+    return { output: { ...fallbackOutput("", situationMap), situationMap }, status: "unavailable", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: true };
+  }
+}
+
+function adaptationMap(situationMap: SituationMap): SituationMap {
+  const sections = Object.fromEntries(
+    (Object.keys(situationMap) as Array<keyof SituationMap>).map((section) => [
+      section,
+      situationMap[section]
+        .filter((item) => item.provenance === "guide")
+        .map((item) => ({ ...item }))
+    ])
+  ) as SituationMap;
+  return {
+    ...sections
+  };
+}
+
+function fallbackAdaptation(
+  situationMap: SituationMap,
+  memories: readonly GoogleRetrievedMemory[],
+  preferences: readonly GoogleGuidancePreference[]
+): GooglePivotGeneratorOutput {
+  const rememberedPivot = memories[0]?.selectedPivotKind;
+  const avoidBreathing = preferences.some((preference) => /avoid.*breath|not.*breath/i.test(preference.text));
+  const primary = rememberedPivot && !(avoidBreathing && rememberedPivot === "breathing-focus")
+    ? requirePivot(rememberedPivot)
+    : preferredPivot(situationMap.shared.map((item) => item.text).join(" "));
+  const alternatives = PIVOT_LIBRARY.filter((pivot) => pivot.kind !== primary.kind).slice(0, 2);
+  return {
+    situationMap,
+    primaryPivotKind: primary.kind,
+    alternativePivotKinds: alternatives.map((pivot) => pivot.kind),
+    whyThisPivot: memories.length > 0
+      ? `A similar saved Check-in used “${memories[0].selectedPivotTitle}” and was marked ${memories[0].outcome.status}.`
+      : "This recommendation follows your explicit Guidance preference.",
+  };
+}
+
+function addPriorPatternItems(
+  situationMap: SituationMap,
+  explanations: readonly GoogleMemoryExplanation[]
+): SituationMap {
+  if (explanations.length === 0) return situationMap;
+  const existingIds = new Set(situationMap.priorPatterns.map((item) => item.id));
+  const additions = explanations
+    .filter((explanation) => !existingIds.has(`memory-${explanation.memoryId}`))
+    .map((explanation) => createSituationMapItem(`memory-${explanation.memoryId}`, explanation.text, "guide"));
+  return { ...situationMap, priorPatterns: [...situationMap.priorPatterns, ...additions] };
+}
+
+function removeMemoryPatterns(situationMap: SituationMap, memoryIds: readonly string[]): SituationMap {
+  if (memoryIds.length === 0) return situationMap;
+  return {
+    ...situationMap,
+    priorPatterns: situationMap.priorPatterns.filter((item) => !memoryIds.some((id) => item.id === `memory-${id}`))
+  };
+}
+
+function validateGoogleEmbedding(embedding: readonly number[]): number[] {
+  if (embedding.length !== 768) throw new Error("Expected a 768-dimensional Google embedding.");
+  if (embedding.some((value) => !Number.isFinite(value))) throw new Error("Google embedding must contain finite values.");
+  return [...embedding];
 }
 
 function recommendationFromOutput(output: GooglePivotGeneratorOutput) {
@@ -744,7 +1093,9 @@ function validateGeneratorOutput(
         !clarificationQuestion.text.trim()) {
       throw new Error("Generated clarification question is invalid.");
     }
+    validateSafeAgentText(clarificationQuestion.text);
   }
+  validateSafeAgentText(output.whyThisPivot);
 
   requirePivot(output.primaryPivotKind);
   if (
@@ -760,6 +1111,7 @@ function validateGeneratorOutput(
       if (!mapItem.text.trim() || !isProvenance(mapItem.provenance)) {
         throw new Error("Generated Situation-map provenance is invalid.");
       }
+      if (mapItem.provenance === "guide") validateSafeAgentText(mapItem.text);
     }
   }
   if (acceptedSituationMap) {
@@ -873,13 +1225,14 @@ function defaultDerivedMemory(situationMap: SituationMap, pivot: Pivot, outcome:
   return `${defaultPendingMemory(situationMap)} ${pivot.title} was ${outcome.status}${outcome.agencyShift ? `; agency felt ${outcome.agencyShift}` : ""}.`;
 }
 
-function validateDerivedMemoryContext(context: string): void {
+function validateDerivedMemoryContext(context: string): string {
   if (typeof context !== "string" || !context.trim() || context.length > 500) {
     throw new Error("Derived memory context is invalid.");
   }
-  if (/\b(diagnos\w*|personality|predict\w*|crisis|suicid\w*|medical advice)\b/i.test(context)) {
+  if (/\b(diagnos\w*|personality|motives?|trait\w*|permanent|predict\w*|crisis|suicid\w*|hidden preference|psychological profile|medical advice)\b/i.test(context)) {
     throw new Error("Derived memory context contains disallowed content.");
   }
+  return context.trim();
 }
 
 function isValidPivotOutcome(outcome: unknown): outcome is PivotOutcome {
@@ -897,4 +1250,10 @@ const defaultGenerator: GooglePivotGenerator = {
 
 function isProvenance(value: unknown): value is Provenance {
   return value === "person" || value === "artifact" || value === "guide";
+}
+
+function validateSafeAgentText(text: string): void {
+  if (/\b(diagnos\w*|personality|motives?|trait\w*|permanent characteristic\w*|predict\w*|crisis|suicid\w*|hidden preference|psychological profile|medical advice)\b/i.test(text)) {
+    throw new Error("Generated state contains disallowed personal inference.");
+  }
 }

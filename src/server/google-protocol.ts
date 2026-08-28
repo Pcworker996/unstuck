@@ -6,6 +6,8 @@ import {
   type GooglePivotResult,
   googlePivotSafetyResult
 } from "../app/google-pivot-protocol";
+import type { GooglePivotAdaptation } from "../app/google-pivot-protocol";
+import type { GoogleMemoryRepository } from "./google-memory";
 
 export type GoogleProtocol = {
   id: string;
@@ -58,6 +60,12 @@ export type GoogleProtocolDependencies = {
   repository: GoogleProtocolRepository;
   createId: () => string;
   now: () => string;
+  adaptation?: {
+    memoryRepository: GoogleMemoryRepository;
+    embed: (text: string) => Promise<readonly number[]>;
+    threshold?: number;
+    limit?: number;
+  };
 };
 
 export type GoogleProtocolResult =
@@ -123,13 +131,20 @@ export async function listGoogleSavedProtocols(
 
 export async function deleteGoogleSavedProtocol(
   input: { subject: string; protocolId: string },
-  dependencies: Pick<GoogleProtocolDependencies, "repository">
+  dependencies: Pick<GoogleProtocolDependencies, "repository" | "adaptation">
 ): Promise<{ kind: "deleted"; protocolId: string } | { kind: "not-found" }> {
   const deleted = await dependencies.repository.delete({
     protocolId: input.protocolId,
     ownerSubject: input.subject
   });
-  return deleted ? { kind: "deleted", protocolId: input.protocolId } : { kind: "not-found" };
+  if (!deleted) return { kind: "not-found" };
+  if (dependencies.adaptation) {
+    await dependencies.adaptation.memoryRepository.deleteMemory({
+      ownerSubject: input.subject,
+      memoryId: input.protocolId
+    });
+  }
+  return { kind: "deleted", protocolId: input.protocolId };
 }
 
 export async function runGoogleProtocolCommand(
@@ -140,7 +155,7 @@ export async function runGoogleProtocolCommand(
     idempotencyKey: string;
     command: GooglePivotCommand;
   },
-  dependencies: Pick<GoogleProtocolDependencies, "repository">,
+  dependencies: Pick<GoogleProtocolDependencies, "repository" | "adaptation">,
   generator?: GooglePivotGenerator
 ): Promise<GoogleProtocolCommandResult> {
   if (input.command.type === "start") {
@@ -166,7 +181,7 @@ export async function runGoogleProtocolCommand(
     return { kind: "idempotency-conflict", protocol: visibleProtocol(replay.protocol) };
   }
   if (replay?.kind === "match" && replay.protocol.pivotState && isPivotState(replay.protocol.pivotState)) {
-    return { kind: "state", state: replay.protocol.pivotState, replayed: true };
+    return { kind: "state", state: normalizePivotState(replay.protocol.pivotState), replayed: true };
   }
 
   if (existing.version !== input.expectedVersion) {
@@ -174,11 +189,18 @@ export async function runGoogleProtocolCommand(
   }
 
   const current = existing.pivotState && isPivotState(existing.pivotState)
-    ? existing.pivotState
+    ? normalizePivotState(existing.pivotState)
     : undefined;
-  const result: GooglePivotCommandResult = await runGooglePivotCommand(current, input.command, generator);
+  const adaptation = dependencies.adaptation
+    ? adaptationFor({ ...dependencies.adaptation, ownerSubject: input.subject })
+    : undefined;
+  let result: GooglePivotCommandResult = await runGooglePivotCommand(current, input.command, generator, adaptation);
   if (result.kind !== "ok") {
     return result;
+  }
+
+  if (dependencies.adaptation && result.state.phase === "outcome" && result.state.saveRequested) {
+    result = { kind: "ok", state: await persistGoogleDerivedMemory(result.state, dependencies.adaptation.memoryRepository, dependencies.adaptation.embed, input.subject, input.protocolId) };
   }
 
   const nextState = { ...result.state, version: existing.version + 1 };
@@ -194,12 +216,74 @@ export async function runGoogleProtocolCommand(
     return { kind: "conflict", protocol: saved.protocol };
   }
   if (saved.kind === "idempotent" && saved.protocol.pivotState && isPivotState(saved.protocol.pivotState)) {
-    return { kind: "state", state: saved.protocol.pivotState, replayed: true };
+    return { kind: "state", state: normalizePivotState(saved.protocol.pivotState), replayed: true };
   }
   if (saved.kind === "idempotency-conflict") {
     return { kind: "idempotency-conflict", protocol: saved.protocol };
   }
   return { kind: "state", state: nextState, replayed: false };
+}
+
+function adaptationFor(input: {
+  ownerSubject: string;
+  memoryRepository: GoogleMemoryRepository;
+  embed: (text: string) => Promise<readonly number[]>;
+  threshold?: number;
+  limit?: number;
+}): GooglePivotAdaptation {
+  return {
+    ownerSubject: input.ownerSubject,
+    embed: input.embed,
+    threshold: input.threshold,
+    limit: input.limit,
+    retrieveSimilarMemories: (retrieval) => input.memoryRepository.retrieveSimilarMemories(retrieval),
+    listGuidancePreferences: (ownerSubject) => input.memoryRepository.listGuidancePreferences(ownerSubject),
+    excludeMemory: (memory) => input.memoryRepository.excludeMemory(memory),
+    forgetMemory: (memory) => input.memoryRepository.forgetMemory(memory),
+    deleteMemory: (memory) => input.memoryRepository.deleteMemory(memory)
+  };
+}
+
+async function persistGoogleDerivedMemory(
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  repository: GoogleMemoryRepository,
+  embed: (text: string) => Promise<readonly number[]>,
+  ownerSubject: string,
+  protocolId: string
+): Promise<Extract<GooglePivotResult, { kind: "pivot-protocol" }>> {
+  if (state.enrichment !== "saved" || !state.derivedMemory || !state.selectedPivot || !state.outcome) {
+    return {
+      ...state,
+      enrichment: "unavailable",
+      derivedMemory: undefined,
+      activity: [...state.activity, { kind: "fallback", message: "The outcome was saved, but its Derived memory could not be prepared." }]
+    };
+  }
+  try {
+    const saved = await repository.saveDerivedMemory({
+      ownerSubject,
+      protocolId,
+      memoryId: protocolId,
+      context: state.derivedMemory.context,
+      embedding: await embed(state.derivedMemory.context),
+      selectedPivotKind: state.selectedPivot.kind,
+      selectedPivotTitle: state.selectedPivot.title,
+      outcome: state.outcome,
+      approved: true
+    });
+    return {
+      ...state,
+      enrichment: "saved",
+      derivedMemory: { id: saved.id, context: saved.context, approved: true }
+    };
+  } catch {
+    return {
+      ...state,
+      enrichment: "unavailable",
+      derivedMemory: undefined,
+      activity: [...state.activity, { kind: "fallback", message: "The outcome was saved, but adaptation is temporarily unavailable." }]
+    };
+  }
 }
 
 export function createInMemoryGoogleProtocolRepository(): GoogleProtocolRepository {
@@ -304,4 +388,18 @@ function isPivotState(value: unknown): value is Extract<GooglePivotResult, { kin
     typeof value.version === "number" &&
     "situationMap" in value
   );
+}
+
+function normalizePivotState(
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
+): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
+  return {
+    ...state,
+    memoryExplanations: state.memoryExplanations ?? [],
+    retrievedMemories: state.retrievedMemories ?? [],
+    retrievalAttempted: state.retrievalAttempted ?? false,
+    adaptationStatus: state.adaptationStatus ?? "not-requested",
+    excludedMemoryIds: state.excludedMemoryIds ?? [],
+    guidancePreferenceIds: state.guidancePreferenceIds ?? []
+  };
 }

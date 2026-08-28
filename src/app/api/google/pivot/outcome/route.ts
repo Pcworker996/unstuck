@@ -6,10 +6,12 @@ import { createGenkitGooglePivotGenerator } from "../../../../../server/genkit-g
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<Response> {
+  const runtime = getGoogleProtocolRuntime();
   return handleGooglePivotOutcomePost(
     request,
     authenticateFirebaseRequest,
-    getGoogleProtocolRuntime().repository,
-    createGenkitGooglePivotGenerator()
+    runtime.repository,
+    createGenkitGooglePivotGenerator(),
+    runtime.adaptation
   );
 }

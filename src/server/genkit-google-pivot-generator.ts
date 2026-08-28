@@ -8,6 +8,7 @@ import type {
   SituationMap
 } from "../app/google-pivot-protocol";
 import type { Pivot } from "../app/pivot-protocol";
+import { GOOGLE_EMBEDDING_DIMENSIONS, GOOGLE_EMBEDDING_MODEL_ID, validateGoogleEmbedding } from "./google-memory";
 
 const mapItemSchema = z.object({
   id: z.string(),
@@ -36,14 +37,7 @@ const pivotOutputSchema = z.object({
 });
 
 export function createGenkitGooglePivotGenerator(): GooglePivotGenerator {
-  const ai = genkit({
-    plugins: [
-      vertexAI({
-        location: process.env.GOOGLE_CLOUD_LOCATION?.trim() || "us-central1",
-        projectId: process.env.FIREBASE_PROJECT_ID?.trim()
-      })
-    ]
-  });
+  const ai = createGoogleGenkit();
   const model = vertexAI.model(process.env.VERTEX_GEMINI_MODEL_ID?.trim() || "gemini-3.5-flash");
 
   return {
@@ -55,6 +49,17 @@ export function createGenkitGooglePivotGenerator(): GooglePivotGenerator {
       });
       if (!response.output) {
         throw new Error("Gemini returned no structured Pivot output.");
+      }
+      return response.output;
+    },
+    async adapt({ situationMap, currentDerivedContext, retrievedMemories, guidancePreferences }) {
+      const response = await ai.generate({
+        model,
+        prompt: adaptationPromptFor({ situationMap, currentDerivedContext, retrievedMemories, guidancePreferences }),
+        output: { schema: pivotOutputSchema }
+      });
+      if (!response.output) {
+        throw new Error("Gemini returned no adapted Pivot output.");
       }
       return response.output;
     },
@@ -92,6 +97,31 @@ export function createGenkitGooglePivotGenerator(): GooglePivotGenerator {
       return response.output;
     }
   };
+}
+
+export function createGenkitGoogleEmbeddingProvider(): (text: string) => Promise<readonly number[]> {
+  const ai = createGoogleGenkit();
+  const embedder = vertexAI.embedder(GOOGLE_EMBEDDING_MODEL_ID, {
+    outputDimensionality: GOOGLE_EMBEDDING_DIMENSIONS,
+    taskType: "RETRIEVAL_DOCUMENT"
+  });
+  return async (text) => {
+    const embeddings = await ai.embed({ embedder, content: text });
+    const embedding = embeddings[0]?.embedding;
+    if (!embedding) throw new Error("Gemini returned no embedding.");
+    return validateGoogleEmbedding(embedding);
+  };
+}
+
+function createGoogleGenkit() {
+  return genkit({
+    plugins: [
+      vertexAI({
+        location: process.env.GOOGLE_CLOUD_LOCATION?.trim() || "us-central1",
+        projectId: process.env.FIREBASE_PROJECT_ID?.trim()
+      })
+    ]
+  });
 }
 
 function memoryPromptFor(input: {
@@ -135,5 +165,24 @@ function promptFor(input: {
     `Quick dump from the person:\n${input.quickDump}`,
     `Initial map to refine:\n${JSON.stringify(input.situationMap)}`,
     `Clarification answers so far:\n${JSON.stringify(input.clarificationAnswers ?? [])}`
+  ].join("\n\n");
+}
+
+function adaptationPromptFor(input: {
+  situationMap: SituationMap;
+  currentDerivedContext: string;
+  retrievedMemories: readonly { id: string; protocolId: string; context: string; selectedPivotTitle: string; outcome: PivotOutcome }[];
+  guidancePreferences: readonly { id: string; text: string }[];
+}): string {
+  return [
+    "Adapt the Unstuck Pivot guide from approved, user-visible context only.",
+    "Return only the requested structured output. Do not infer personality, motives, diagnoses, permanent characteristics, or hidden preferences.",
+    "Do not mention or reconstruct raw Private entries. Treat each prior memory as a compact factual summary.",
+    "Keep person statements and corrections in their existing provenance. Keep prior patterns as guide interpretations.",
+    "Use exactly one primary Pivot and exactly two distinct alternatives from: grounding, breathing-focus, reaching-out, basic-needs-reset, task-first-step.",
+    `Current approved Derived context: ${input.currentDerivedContext}`,
+    `Current Situation map: ${JSON.stringify(input.situationMap)}`,
+    `Approved prior Derived memories: ${JSON.stringify(input.retrievedMemories)}`,
+    `Explicit Guidance preferences: ${JSON.stringify(input.guidancePreferences)}`
   ].join("\n\n");
 }

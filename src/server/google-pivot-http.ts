@@ -6,7 +6,8 @@ import {
 } from "../app/google-pivot-protocol";
 import {
   runGoogleProtocolCommand,
-  type GoogleProtocolRepository
+  type GoogleProtocolRepository,
+  type GoogleProtocolDependencies
 } from "./google-protocol";
 
 type Authenticate = (request: Request) => Promise<{ subject: string }>;
@@ -15,18 +16,20 @@ export async function handleGooglePivotPost(
   request: Request,
   authenticate: Authenticate,
   repository: GoogleProtocolRepository,
-  generator?: GooglePivotGenerator
+  generator?: GooglePivotGenerator,
+  adaptation?: GoogleProtocolDependencies["adaptation"]
 ): Promise<Response> {
-  return handleGooglePivotCommandPost(request, authenticate, repository, generator, "protocol");
+  return handleGooglePivotCommandPost(request, authenticate, repository, generator, adaptation, "protocol");
 }
 
 export async function handleGooglePivotOutcomePost(
   request: Request,
   authenticate: Authenticate,
   repository: GoogleProtocolRepository,
-  generator?: GooglePivotGenerator
+  generator?: GooglePivotGenerator,
+  adaptation?: GoogleProtocolDependencies["adaptation"]
 ): Promise<Response> {
-  return handleGooglePivotCommandPost(request, authenticate, repository, generator, "outcome");
+  return handleGooglePivotCommandPost(request, authenticate, repository, generator, adaptation, "outcome");
 }
 
 async function handleGooglePivotCommandPost(
@@ -34,6 +37,7 @@ async function handleGooglePivotCommandPost(
   authenticate: Authenticate,
   repository: GoogleProtocolRepository,
   generator: GooglePivotGenerator | undefined,
+  adaptation: GoogleProtocolDependencies["adaptation"],
   route: "protocol" | "outcome"
 ): Promise<Response> {
   try {
@@ -48,7 +52,7 @@ async function handleGooglePivotCommandPost(
         idempotencyKey: input.idempotencyKey,
         command: input.command
       },
-      { repository },
+      { repository, adaptation },
       generator
     );
     if (result.kind === "state") {
@@ -171,6 +175,11 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
     case "regenerate-pivot":
     case "dismiss-pivot":
       return { type };
+    case "exclude-memory":
+    case "forget-memory":
+    case "delete-memory":
+      if (typeof body.memoryId !== "string" || !body.memoryId.trim()) throw new HttpInputError("A memory identifier is required.");
+      return { type, memoryId: body.memoryId.trim() };
     case "record-outcome":
       if (!isPivotOutcome(body.outcome)) throw new HttpInputError("The Pivot outcome is invalid.");
       return { type, outcome: body.outcome };
