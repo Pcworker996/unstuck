@@ -4,9 +4,20 @@ import {
   type GoogleImageArtifactExtractor,
   type GoogleImageArtifactInput
 } from "./google-image-artifact";
+import {
+  MAX_GOOGLE_ARTIFACT_COUNT,
+  MAX_GOOGLE_ARTIFACT_TOTAL_BYTES,
+  inspectGoogleSupportingArtifact,
+  processGoogleSupportingArtifact,
+  type GooglePdfTemporaryStorage,
+  type GoogleSupportingArtifactExtractor,
+  type GoogleSupportingArtifactInput,
+  type GoogleSupportingArtifactProcessing
+} from "./google-supporting-artifacts";
 import { PIVOT_LIBRARY, type Pivot, type PivotKind } from "./pivot-protocol";
 
 export type { GoogleImageArtifactInput } from "./google-image-artifact";
+export type { GoogleSupportingArtifactInput } from "./google-supporting-artifacts";
 
 export type Provenance = "person" | "artifact" | "guide";
 
@@ -144,11 +155,22 @@ export type GooglePivotGenerator = {
     outcome: PivotOutcome;
   }) => Promise<string>;
   extractImageClaims?: GoogleImageArtifactExtractor;
+  extractSupportingArtifactClaims?: GoogleSupportingArtifactExtractor;
+  temporaryPdfStorage?: GooglePdfTemporaryStorage;
 };
 
 export type GoogleImageProcessingState = {
   status: "not-provided" | "accepted" | "rejected";
   mimeType?: string;
+  claimCount?: number;
+  message: string;
+};
+
+export type GoogleArtifactProcessingState = {
+  artifactId: string;
+  status: "accepted" | "rejected";
+  mimeType?: string;
+  pageCount?: number;
   claimCount?: number;
   message: string;
 };
@@ -207,6 +229,8 @@ export type GooglePivotResult =
       excludedMemoryIds: string[];
       guidancePreferenceIds: string[];
       imageProcessing: GoogleImageProcessingState;
+      artifacts: GoogleArtifactProcessingState[];
+      artifactBytes: number;
       approvedArtifactClaimIds: string[];
       recommendation?: {
         primary: Pivot;
@@ -239,7 +263,13 @@ export function googlePivotSafetyResult(
 }
 
 export async function runGooglePivotProtocol(
-  input: { quickDump: string; consentGiven: boolean; saveRequested?: boolean; image?: GoogleImageArtifactInput },
+  input: {
+    quickDump: string;
+    consentGiven: boolean;
+    saveRequested?: boolean;
+    image?: GoogleImageArtifactInput;
+    artifacts?: GoogleSupportingArtifactInput[];
+  },
   generator: GooglePivotGenerator = defaultGenerator,
   adaptation?: GooglePivotAdaptation
 ): Promise<GooglePivotResult> {
@@ -258,6 +288,8 @@ export async function runGooglePivotProtocol(
   let situationMap = createSituationMap(quickDump);
   activity.push({ kind: "map-created", message: "Situation map created." });
   let fallback = false;
+  let artifacts: GoogleArtifactProcessingState[] = [];
+  let artifactBytes = 0;
 
   const imageReview = await reviewImage(input.image, generator, quickDump);
   if (imageReview.kind === "safety-interruption") {
@@ -275,6 +307,7 @@ export async function runGooglePivotProtocol(
   if (imageReview.kind === "rejected") {
     fallback = true;
     imageProcessing = { status: "rejected", message: imageReview.message };
+    artifacts = [{ artifactId: "artifact-image-1", status: "rejected", message: imageReview.message }];
     activity.push(
       { kind: "artifact-review", message: "The optional image was reviewed without retaining its bytes or filename." },
       { kind: "artifact-rejected", message: imageReview.message },
@@ -293,7 +326,35 @@ export async function runGooglePivotProtocol(
       { kind: "artifact-safety-completed", message: "The extracted image content passed the second Safety gate." },
       { kind: "artifact-accepted", message: "The image claims were added to the Situation map as artifact claims." }
     );
+    artifacts = [{
+      artifactId: "artifact-image-1",
+      status: "accepted",
+      mimeType: imageReview.mimeType,
+      claimCount: imageReview.claims.length,
+      message: "The image was reviewed and its claims were added as artifact claims."
+    }];
+    artifactBytes = input.image?.bytes.length ?? 0;
   }
+
+  const artifactReview = await reviewSupportingArtifacts(
+    input.artifacts ?? [],
+    generator,
+    quickDump,
+    artifacts.filter((artifact) => artifact.status === "accepted").length,
+    artifactBytes,
+    artifacts.length
+  );
+  if (artifactReview.kind === "safety-interruption") {
+    return {
+      ...artifactReview.result,
+      activity: [...activity, ...artifactReview.activity]
+    };
+  }
+  artifacts = [...artifacts, ...artifactReview.states];
+  artifactBytes += artifactReview.acceptedBytes;
+  situationMap = addArtifactClaims(situationMap, artifactReview.accepted);
+  fallback ||= artifactReview.fallback;
+  activity.push(...artifactReview.activity);
 
   let output: GooglePivotGeneratorOutput;
   let generatedOutput: unknown;
@@ -390,6 +451,8 @@ export async function runGooglePivotProtocol(
     excludedMemoryIds: [],
     guidancePreferenceIds: adapted.preferenceIds,
     imageProcessing,
+    artifacts,
+    artifactBytes,
     approvedArtifactClaimIds: [],
     activity,
     fallback
@@ -397,8 +460,10 @@ export async function runGooglePivotProtocol(
 }
 
 export type GooglePivotCommand =
-  | { type: "start"; quickDump: string; consentGiven: boolean; saveRequested?: boolean; image?: GoogleImageArtifactInput }
+  | { type: "start"; quickDump: string; consentGiven: boolean; saveRequested?: boolean; image?: GoogleImageArtifactInput; artifacts?: GoogleSupportingArtifactInput[] }
   | { type: "add-image"; image: GoogleImageArtifactInput }
+  | { type: "add-artifact"; artifact: GoogleSupportingArtifactInput }
+  | { type: "add-artifacts"; artifacts: GoogleSupportingArtifactInput[] }
   | { type: "approve-artifact-claim"; itemId: string }
   | { type: "answer-clarification"; questionId: string; answer: string }
   | { type: "skip-clarification"; questionId: string }
@@ -453,6 +518,11 @@ export async function runGooglePivotCommand(
       return { kind: "invalid-command", message: "Only one image can be added to a Situation." };
     }
     return addImageToProtocol(current, command.image, generator, adaptation);
+  }
+
+  if (command.type === "add-artifact" || command.type === "add-artifacts") {
+    const inputs = command.type === "add-artifact" ? [command.artifact] : command.artifacts;
+    return addArtifactsToProtocol(current, inputs, generator, adaptation);
   }
 
   if (command.type === "approve-artifact-claim") {
@@ -699,6 +769,27 @@ async function addImageToProtocol(
   adaptation?: GooglePivotAdaptation
 ): Promise<GooglePivotCommandResult> {
   if (!isSituationMapEditable(current.phase)) return mapEditPhaseError();
+  const acceptedCount = current.artifacts?.filter((artifact) => artifact.status === "accepted").length ?? 0;
+  const artifactId = `artifact-image-${(current.artifacts ?? []).length + 1}`;
+  if (acceptedCount >= MAX_GOOGLE_ARTIFACT_COUNT || (current.artifactBytes ?? 0) + image.bytes.length > MAX_GOOGLE_ARTIFACT_TOTAL_BYTES) {
+    const message = acceptedCount >= MAX_GOOGLE_ARTIFACT_COUNT
+      ? "The image was rejected because a Situation can include at most five artifacts."
+      : "The image was rejected because the Situation's combined artifact limit is 25 MB.";
+    return {
+      kind: "ok",
+      state: {
+        ...current,
+        imageProcessing: { status: "rejected", message },
+        artifacts: [...(current.artifacts ?? []), { artifactId, status: "rejected", message }],
+        fallback: true,
+        activity: [...current.activity,
+          { kind: "artifact-review", message: "The optional image was inspected without retaining its bytes or filename." },
+          { kind: "artifact-rejected", message },
+          { kind: "fallback", message: "The prior valid Situation map remains available without the image." }
+        ]
+      }
+    };
+  }
 
   const review = await reviewImage(image, generator, current.checkIn.quickDump);
   if (review.kind === "safety-interruption") {
@@ -710,6 +801,7 @@ async function addImageToProtocol(
       state: {
         ...current,
         imageProcessing: { status: "rejected", message: review.message },
+        artifacts: [...(current.artifacts ?? []), { artifactId, status: "rejected", message: review.message }],
         fallback: true,
         activity: [
           ...current.activity,
@@ -735,19 +827,27 @@ async function addImageToProtocol(
   );
   return {
     kind: "ok",
-    state: {
-      ...current,
+      state: {
+        ...current,
       phase: "recommended",
       selectedPivot: undefined,
       outcome: undefined,
       situationMap: preserveAcceptedMapItems(generation.output.situationMap, situationMap, current.revisions),
       recommendation: recommendationFromOutput(generation.output),
-      imageProcessing: {
+        imageProcessing: {
         status: "accepted",
         mimeType: review.mimeType,
         claimCount: review.claims.length,
         message: "The image was reviewed and its claims were added as artifact claims."
-      },
+        },
+        artifacts: [...(current.artifacts ?? []), {
+          artifactId,
+          status: "accepted",
+          mimeType: review.mimeType,
+          claimCount: review.claims.length,
+          message: "The image was reviewed and its claims were added as artifact claims."
+        }],
+        artifactBytes: (current.artifactBytes ?? 0) + image.bytes.length,
       memoryExplanations: generation.explanations,
       retrievedMemories: generation.memories,
       retrievalAttempted: generation.retrievalAttempted,
@@ -759,6 +859,60 @@ async function addImageToProtocol(
         { kind: "artifact-review", message: "The optional image was reviewed without retaining its bytes or filename." },
         { kind: "artifact-safety-completed", message: "The extracted image content passed the second Safety gate." },
         { kind: "artifact-accepted", message: "The image claims were added to the Situation map as artifact claims." },
+        { kind: "generation", message: "The recommendation was updated from accepted artifact claims." },
+        ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted Situation map." }] : [])
+      ]
+    }
+  };
+}
+
+async function addArtifactsToProtocol(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  inputs: GoogleSupportingArtifactInput[],
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
+): Promise<GooglePivotCommandResult> {
+  if (!isSituationMapEditable(current.phase)) return mapEditPhaseError();
+  const review = await reviewSupportingArtifacts(
+    inputs,
+    generator,
+    current.checkIn.quickDump,
+    current.artifacts?.filter((artifact) => artifact.status === "accepted").length ?? 0,
+    current.artifactBytes ?? 0,
+    current.artifacts?.length ?? 0
+  );
+  if (review.kind === "safety-interruption") {
+    return { kind: "safety-interruption", result: { ...review.result, priorState: current } };
+  }
+  const situationMap = addArtifactClaims(current.situationMap, review.accepted);
+  const generation = await generateAdaptedOutput(
+    current.checkIn.quickDump,
+    situationMap,
+    generator,
+    current.clarification?.answers,
+    adaptationForState(adaptation, current),
+    current.retrievalAttempted ? current.retrievedMemories : undefined
+  );
+  return {
+    kind: "ok",
+    state: {
+      ...current,
+      phase: "recommended",
+      selectedPivot: undefined,
+      outcome: undefined,
+      situationMap: preserveAcceptedMapItems(generation.output.situationMap, situationMap, current.revisions),
+      recommendation: recommendationFromOutput(generation.output),
+      artifacts: [...(current.artifacts ?? []), ...review.states],
+      artifactBytes: (current.artifactBytes ?? 0) + review.acceptedBytes,
+      memoryExplanations: generation.explanations,
+      retrievedMemories: generation.memories,
+      retrievalAttempted: generation.retrievalAttempted,
+      adaptationStatus: generation.status,
+      guidancePreferenceIds: generation.preferenceIds,
+      fallback: current.fallback || review.fallback || generation.fallback,
+      activity: [
+        ...current.activity,
+        ...review.activity,
         { kind: "generation", message: "The recommendation was updated from accepted artifact claims." },
         ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted Situation map." }] : [])
       ]
@@ -1261,6 +1415,146 @@ async function reviewImage(
   return { kind: "accepted", mimeType: processed.mimeType, claims: processed.claims };
 }
 
+async function reviewSupportingArtifacts(
+  inputs: readonly GoogleSupportingArtifactInput[],
+  generator: GooglePivotGenerator,
+  quickDump: string,
+  existingAcceptedCount: number,
+  existingBytes: number,
+  existingArtifactCount = existingAcceptedCount
+): Promise<{
+  kind: "completed";
+  accepted: Array<{ artifactId: string; claims: string[] }>;
+  states: GoogleArtifactProcessingState[];
+  acceptedBytes: number;
+  fallback: boolean;
+  activity: ActivityEvent[];
+} | {
+  kind: "safety-interruption";
+  result: Extract<GooglePivotResult, { kind: "safety-interruption" }>;
+  activity: ActivityEvent[];
+}> {
+  if (inputs.length === 0) {
+    return { kind: "completed", accepted: [], states: [], acceptedBytes: 0, fallback: false, activity: [] };
+  }
+
+  const activity: ActivityEvent[] = [];
+  const inspections = inputs.map((input) => inspectGoogleSupportingArtifact(input));
+  const validCandidates = inspections.flatMap((inspection, index) => inspection.kind === "accepted" ? [{ index, input: inputs[index] }] : []);
+  let availableSlots = Math.max(0, MAX_GOOGLE_ARTIFACT_COUNT - existingAcceptedCount);
+  let availableBytes = Math.max(0, MAX_GOOGLE_ARTIFACT_TOTAL_BYTES - existingBytes);
+  const selectedCandidates: typeof validCandidates = [];
+  const limitRejections = new Map<number, string>();
+  for (const candidate of validCandidates) {
+    if (availableSlots === 0) {
+      limitRejections.set(candidate.index, "This artifact was rejected because a Situation can include at most five artifacts.");
+    } else if (candidate.input.bytes.length > availableBytes) {
+      limitRejections.set(candidate.index, "This artifact was rejected because the Situation's combined artifact limit is 25 MB.");
+    } else {
+      selectedCandidates.push(candidate);
+      availableSlots -= 1;
+      availableBytes -= candidate.input.bytes.length;
+    }
+  }
+
+  const extractor = supportingArtifactExtractor(generator);
+  const processed: GoogleSupportingArtifactProcessing[] = [];
+  for (const [index, inspection] of inspections.entries()) {
+    if (inspection.kind === "rejected") {
+      activity.push({ kind: "artifact-review", message: `Supporting artifact ${index + 1} was inspected without retaining its filename.` });
+      activity.push({ kind: "artifact-rejected", message: inspection.message });
+    }
+    const limitMessage = limitRejections.get(index);
+    if (limitMessage) {
+      activity.push({ kind: "artifact-review", message: `Supporting artifact ${index + 1} was inspected without retaining its filename.` });
+      activity.push({ kind: "artifact-rejected", message: limitMessage });
+    }
+  }
+  for (const candidate of selectedCandidates) {
+    const index = candidate.index;
+    const input = candidate.input;
+    const artifactId = `artifact-${existingArtifactCount + index + 1}`;
+    const result = await processGoogleSupportingArtifact(artifactId, input, extractor, generator.temporaryPdfStorage);
+    processed.push(result);
+    activity.push({ kind: "artifact-review", message: `Supporting artifact ${index + 1} was inspected without retaining its filename.` });
+    if (result.kind === "rejected") {
+      activity.push({ kind: "artifact-rejected", message: result.message });
+      continue;
+    }
+    activity.push({ kind: "artifact-safety-completed", message: `Supporting artifact ${index + 1} passed the second Safety gate.` });
+    if (indicatesImmediateDanger(result.claims.join("\n"))) {
+      return {
+        kind: "safety-interruption",
+        result: {
+          kind: "safety-interruption",
+          checkIn: { quickDump },
+          activity: [
+            { kind: "safety-completed", message: "Safety gate completed; normal Pivot processing was interrupted." },
+            { kind: "artifact-safety-completed", message: "The extracted artifact content triggered the app-owned Safety interruption." },
+            { kind: "fallback", message: "Safety interruption returned app-owned urgent-support guidance." }
+          ]
+        },
+        activity: [...activity, { kind: "fallback", message: "The accepted Situation map was preserved when artifact Safety interrupted processing." }]
+      };
+    }
+  }
+
+  const accepted = processed.flatMap((result) => result.kind === "accepted" ? [{ artifactId: result.artifactId, claims: result.claims }] : []);
+  const acceptedBytes = processed.reduce((total, result) => {
+    if (result.kind !== "accepted") return total;
+    const candidate = selectedCandidates.find(({ index }) => `artifact-${existingArtifactCount + index + 1}` === result.artifactId);
+    return total + (candidate?.input.bytes.length ?? 0);
+  }, 0);
+  for (const result of processed) {
+    if (result.kind === "accepted") {
+      activity.push({ kind: "artifact-accepted", message: `${result.artifactId} claims were added as distinct artifact claims.` });
+    }
+  }
+  if (processed.some((result) => result.kind === "rejected") || inspections.some((inspection) => inspection.kind === "rejected") || limitRejections.size > 0) {
+    activity.push({ kind: "fallback", message: "The Quick dump and valid artifact claims remain sufficient to continue." });
+  }
+  return {
+    kind: "completed",
+    accepted,
+    states: inputs.map((_, index) => {
+      const result = processed.find((candidate) => candidate.artifactId === `artifact-${existingArtifactCount + index + 1}`);
+      if (!result) {
+        const inspection = inspections[index];
+        return {
+          artifactId: `artifact-${existingArtifactCount + index + 1}`,
+          status: "rejected" as const,
+          message: inspection.kind === "rejected"
+            ? inspection.message
+            : limitRejections.get(index) ?? "The artifact was not processed."
+        };
+      }
+      return result.kind === "accepted"
+      ? {
+          artifactId: result.artifactId,
+          status: "accepted",
+          mimeType: result.mimeType,
+          pageCount: result.pageCount,
+          claimCount: result.claims.length,
+          message: "The artifact claims passed Safety and are available as artifact claims."
+        }
+      : { artifactId: result.artifactId, status: "rejected" as const, message: result.message };
+    }),
+    acceptedBytes,
+    fallback: processed.some((result) => result.kind === "rejected") || inspections.some((inspection) => inspection.kind === "rejected") || limitRejections.size > 0,
+    activity
+  };
+}
+
+function supportingArtifactExtractor(generator: GooglePivotGenerator): GoogleSupportingArtifactExtractor {
+  if (generator.extractSupportingArtifactClaims) return generator.extractSupportingArtifactClaims;
+  return async (input) => {
+    if (input.mimeType !== "application/pdf" && generator.extractImageClaims && input.dataUri) {
+      return generator.extractImageClaims({ mimeType: input.mimeType, dataUri: input.dataUri });
+    }
+    throw new Error("Supporting artifact extraction is unavailable.");
+  };
+}
+
 function addImageClaims(situationMap: SituationMap, claims: readonly string[]): SituationMap {
   const nextId = situationMap.artifactClaims.length + 1;
   const additions = claims.map((text, index) => ({
@@ -1272,6 +1566,20 @@ function addImageClaims(situationMap: SituationMap, claims: readonly string[]): 
     ...situationMap,
     artifactClaims: [...situationMap.artifactClaims, ...additions]
   };
+}
+
+function addArtifactClaims(
+  situationMap: SituationMap,
+  artifacts: readonly { artifactId: string; claims: readonly string[] }[]
+): SituationMap {
+  const additions = artifacts.flatMap(({ artifactId, claims }) => claims.map((text, index) => ({
+    id: `artifact-claim-${artifactId}-${index + 1}`,
+    text,
+    provenance: "artifact" as const
+  })));
+  return additions.length === 0
+    ? situationMap
+    : { ...situationMap, artifactClaims: [...situationMap.artifactClaims, ...additions] };
 }
 
 function memorySafeSituationMap(situationMap: SituationMap): SituationMap {

@@ -18,6 +18,7 @@ const pngBytes = () => {
   return bytes;
 };
 const webpBytes = () => new Uint8Array([0x52, 0x49, 0x46, 0x46, 12, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20, 0, 0, 0, 0]);
+const pdfBytes = (pages = 1) => new TextEncoder().encode(`%PDF-1.7\n${Array.from({ length: pages }, (_, index) => `${index + 1} 0 obj\n<< /Type /Page >>\nendobj\n`).join("")}%%EOF`);
 
 describe("Google Pivot Protocol", () => {
   it("requires consent before normal generation and builds a provenance-aware map", async () => {
@@ -401,5 +402,125 @@ describe("Google Pivot Protocol", () => {
       kind: "invalid-command",
       message: "Only one image can be added to a Situation."
     });
+  });
+
+  it("processes a mixed artifact batch independently and retains distinct provenance", async () => {
+    const generator: GooglePivotGenerator = {
+      async extractSupportingArtifactClaims({ artifactId }) {
+        if (artifactId === "artifact-2") throw new Error("artifact unavailable");
+        return { claims: [{ text: `${artifactId} says keys are due Friday.` }] };
+      },
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+      }
+    };
+    const result = await runGooglePivotProtocol({
+      quickDump: "I am overwhelmed by moving paperwork.",
+      consentGiven: true,
+      artifacts: [
+        { bytes: jpegBytes(), declaredMimeType: "image/jpeg" },
+        { bytes: pdfBytes(), declaredMimeType: "application/pdf" },
+        { bytes: new Uint8Array([1, 2, 3]), declaredMimeType: "application/octet-stream" }
+      ]
+    }, generator);
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol") return;
+    expect(result.artifacts).toHaveLength(3);
+    expect(result.artifacts.map((artifact) => artifact.status)).toEqual(["accepted", "rejected", "rejected"]);
+    expect(result.situationMap.artifactClaims).toEqual([{
+      id: "artifact-claim-artifact-1-1",
+      text: "artifact-1 says keys are due Friday.",
+      provenance: "artifact"
+    }]);
+    expect(result.artifacts.map((artifact) => artifact.artifactId)).toEqual(["artifact-1", "artifact-2", "artifact-3"]);
+  });
+
+  it("rejects an over-count batch without silently dropping artifacts", async () => {
+    const generator: GooglePivotGenerator = {
+      async extractSupportingArtifactClaims() { return { claims: [{ text: "A visible fact." }] }; },
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+      }
+    };
+    const result = await runGooglePivotProtocol({
+      quickDump: "I am stuck on a household task.",
+      consentGiven: true,
+      artifacts: Array.from({ length: 6 }, () => ({ bytes: jpegBytes() }))
+    }, generator);
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol") return;
+    expect(result.artifacts).toHaveLength(6);
+    expect(result.artifacts.map((artifact) => artifact.status)).toEqual(["accepted", "accepted", "accepted", "accepted", "accepted", "rejected"]);
+    expect(result.artifacts[5].message).toContain("at most five");
+    expect(result.situationMap.artifactClaims).toHaveLength(5);
+  });
+
+  it("does not let a rejected artifact erase the quick dump or valid claims", async () => {
+    const generator: GooglePivotGenerator = {
+      async extractSupportingArtifactClaims({ artifactId }) {
+        if (artifactId === "artifact-2") return { claims: [{ text: "" }] };
+        return { claims: [{ text: "A valid visible deadline." }] };
+      },
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+      }
+    };
+    const result = await runGooglePivotProtocol({
+      quickDump: "The move is making it hard to focus.",
+      consentGiven: true,
+      artifacts: [{ bytes: jpegBytes() }, { bytes: jpegBytes() }]
+    }, generator);
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol") return;
+    expect(result.checkIn.quickDump).toBe("The move is making it hard to focus.");
+    expect(result.situationMap.artifactClaims).toHaveLength(1);
+    expect(result.fallback).toBe(true);
+  });
+
+  it("keeps a valid artifact when a sibling exceeds the per-file limit", async () => {
+    const generator: GooglePivotGenerator = {
+      async extractSupportingArtifactClaims() {
+        return { claims: [{ text: "A valid artifact claim." }] };
+      },
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+      }
+    };
+    const result = await runGooglePivotProtocol({
+      quickDump: "I am stuck on moving paperwork.",
+      consentGiven: true,
+      artifacts: [{ bytes: jpegBytes() }, { bytes: new Uint8Array(10 * 1024 * 1024 + 1) }]
+    }, generator);
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol") return;
+    expect(result.artifacts.map((artifact) => artifact.status)).toEqual(["accepted", "rejected"]);
+    expect(result.situationMap.artifactClaims).toHaveLength(1);
+  });
+
+  it("applies the collection limits to the legacy add-image command too", async () => {
+    const generator: GooglePivotGenerator = {
+      async extractSupportingArtifactClaims() { return { claims: [{ text: "A valid artifact claim." }] }; },
+      async extractImageClaims() { return { claims: [{ text: "A legacy image claim." }] }; },
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+      }
+    };
+    const started = await runGooglePivotProtocol({
+      quickDump: "I am stuck.",
+      consentGiven: true,
+      artifacts: Array.from({ length: 5 }, () => ({ bytes: jpegBytes() }))
+    }, generator);
+    expect(started.kind).toBe("pivot-protocol");
+    if (started.kind !== "pivot-protocol") return;
+
+    const added = await runGooglePivotCommand(started, { type: "add-image", image: { bytes: jpegBytes() } }, generator);
+    expect(added.kind).toBe("ok");
+    if (added.kind !== "ok") return;
+    expect(added.state.artifacts.at(-1)).toMatchObject({ status: "rejected" });
+    expect(added.state.situationMap.artifactClaims).toHaveLength(5);
   });
 });

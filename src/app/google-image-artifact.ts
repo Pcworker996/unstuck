@@ -117,14 +117,16 @@ function isWebp(bytes: Uint8Array): boolean {
   const declaredSize = readLittleEndianUint32(bytes, 4);
   if (declaredSize !== bytes.length - 8) return false;
   let offset = 12;
+  let sawImageChunk = false;
   while (offset + 8 <= bytes.length) {
     const chunkType = ascii(bytes.slice(offset, offset + 4));
     const chunkSize = readLittleEndianUint32(bytes, offset + 4);
     const chunkEnd = offset + 8 + chunkSize + (chunkSize % 2);
-    if (!(chunkType === "VP8 " || chunkType === "VP8L" || chunkType === "VP8X") || chunkEnd > bytes.length) return false;
-    return chunkEnd === bytes.length;
+    if (!(chunkType === "VP8 " || chunkType === "VP8L" || chunkType === "VP8X" || chunkType === "ALPH" || chunkType === "ANIM" || chunkType === "ANMF" || chunkType === "ICCP" || chunkType === "EXIF" || chunkType === "XMP") || chunkEnd > bytes.length) return false;
+    sawImageChunk ||= chunkType === "VP8 " || chunkType === "VP8L" || chunkType === "VP8X";
+    offset = chunkEnd;
   }
-  return false;
+  return sawImageChunk && offset === bytes.length;
 }
 
 function looksLikeKnownImage(bytes: Uint8Array): boolean {

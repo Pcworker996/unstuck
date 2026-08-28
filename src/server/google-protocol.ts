@@ -9,6 +9,7 @@ import {
 } from "../app/google-pivot-protocol";
 import type { GooglePivotAdaptation } from "../app/google-pivot-protocol";
 import type { GoogleMemoryRepository } from "./google-memory";
+import type { GooglePdfTemporaryStorage } from "../app/google-supporting-artifacts";
 
 export type GoogleProtocol = {
   id: string;
@@ -67,6 +68,7 @@ export type GoogleProtocolDependencies = {
     threshold?: number;
     limit?: number;
   };
+  artifactStorage?: GooglePdfTemporaryStorage;
 };
 
 export type GoogleProtocolResult =
@@ -368,10 +370,26 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
 
 function commandFingerprint(command: GooglePivotCommand): string {
   if (command.type === "start" && command.image) {
-    return JSON.stringify({ ...command, image: imageFingerprint(command.image.bytes, command.image.declaredMimeType) });
+    return JSON.stringify({
+      ...command,
+      image: imageFingerprint(command.image.bytes, command.image.declaredMimeType),
+      ...(command.artifacts ? { artifacts: command.artifacts.map((artifact) => imageFingerprint(artifact.bytes, artifact.declaredMimeType)) } : {})
+    });
+  }
+  if (command.type === "start" && command.artifacts) {
+    return JSON.stringify({
+      ...command,
+      artifacts: command.artifacts.map((artifact) => imageFingerprint(artifact.bytes, artifact.declaredMimeType))
+    });
   }
   if (command.type === "add-image") {
     return JSON.stringify({ ...command, image: imageFingerprint(command.image.bytes, command.image.declaredMimeType) });
+  }
+  if (command.type === "add-artifact") {
+    return JSON.stringify({ ...command, artifact: imageFingerprint(command.artifact.bytes, command.artifact.declaredMimeType) });
+  }
+  if (command.type === "add-artifacts") {
+    return JSON.stringify({ ...command, artifacts: command.artifacts.map((artifact) => imageFingerprint(artifact.bytes, artifact.declaredMimeType)) });
   }
   return JSON.stringify(command);
 }
@@ -418,6 +436,8 @@ function normalizePivotState(
     excludedMemoryIds: state.excludedMemoryIds ?? [],
     guidancePreferenceIds: state.guidancePreferenceIds ?? [],
     approvedArtifactClaimIds: state.approvedArtifactClaimIds ?? [],
-    imageProcessing: state.imageProcessing ?? { status: "not-provided", message: "No image was added." }
+    imageProcessing: state.imageProcessing ?? { status: "not-provided", message: "No image was added." },
+    artifacts: state.artifacts ?? [],
+    artifactBytes: state.artifactBytes ?? 0
   };
 }

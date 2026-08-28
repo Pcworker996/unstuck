@@ -169,7 +169,7 @@ function GooglePivotWorkspace({
   const [quickDump, setQuickDump] = useState("");
   const [consentGiven, setConsentGiven] = useState(false);
   const [saveRequested, setSaveRequested] = useState(false);
-  const [imageFile, setImageFile] = useState<File>();
+  const [artifactFiles, setArtifactFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const startIdempotencyKey = useRef<string | undefined>(undefined);
@@ -190,7 +190,7 @@ function GooglePivotWorkspace({
           quickDump,
           consentGiven,
           saveRequested,
-          ...(imageFile ? { image: await imagePayload(imageFile) } : {})
+          ...(artifactFiles.length ? { artifacts: await Promise.all(artifactFiles.map(artifactPayload)) } : {})
         })
       });
       onResult(next);
@@ -222,14 +222,15 @@ function GooglePivotWorkspace({
             rows={5}
             placeholder="I keep circling around…"
           />
-          <label htmlFor="google-image">Optional image</label>
+          <label htmlFor="google-artifacts">Optional supporting artifacts</label>
           <input
-            id="google-image"
+            id="google-artifacts"
             type="file"
-            accept="image/jpeg,image/png,image/webp"
-            onChange={(event) => setImageFile(event.target.files?.[0])}
+            accept="image/jpeg,image/png,image/webp,application/pdf"
+            multiple
+            onChange={(event) => setArtifactFiles(Array.from(event.target.files ?? []))}
           />
-          <p className="privacy-note">Only add an image if it helps. It is reviewed inline and not retained as a file.</p>
+          <p className="privacy-note">Only add artifacts if useful: up to five JPEG, PNG, WebP, or PDF files, 10 MB each and 25 MB total. PDFs are temporary and deleted after review.</p>
           <label className="choice-control">
             <input
               type="checkbox"
@@ -404,7 +405,17 @@ function GooglePivotResultView({
           ))}
         </section>
       ) : null}
-      {mapEditable && result.imageProcessing?.status !== "accepted" ? <OptionalImageUpload onAdd={(image) => void command({ type: "add-image", image })} /> : null}
+      {result.artifacts?.length ? (
+        <section className="history-card" aria-label="Supporting artifact processing">
+          <p className="eyebrow">Supporting artifacts</p>
+          {result.artifacts.map((artifact) => (
+            <p key={artifact.artifactId}>
+              <strong>{artifact.artifactId}:</strong> {artifact.status === "accepted" ? "accepted" : "rejected"}. {artifact.message}
+            </p>
+          ))}
+        </section>
+      ) : null}
+      {mapEditable && (result.artifacts?.filter((artifact) => artifact.status === "accepted").length ?? 0) < 5 ? <OptionalArtifactUpload onAdd={(artifacts) => void command({ type: "add-artifacts", artifacts })} /> : null}
       {result.phase !== "clarifying" && result.phase !== "dismissed" && recommendation ? (
         <section className="pivot-card" aria-labelledby="google-pivot-heading">
           <p className="eyebrow">{result.phase === "outcome" ? "Pivot outcome" : "Recommended Pivot"}</p>
@@ -661,34 +672,34 @@ function ActivityTrace({ events }: { events: { kind: string; message: string }[]
   );
 }
 
-function OptionalImageUpload({ onAdd }: { onAdd: (image: { base64: string; mimeType: string }) => void }) {
-  const [file, setFile] = useState<File>();
+function OptionalArtifactUpload({ onAdd }: { onAdd: (artifacts: { base64: string; mimeType: string }[]) => void }) {
+  const [files, setFiles] = useState<File[]>([]);
   const [working, setWorking] = useState(false);
 
-  async function addImage() {
-    if (!file) return;
+  async function addArtifacts() {
+    if (!files.length) return;
     setWorking(true);
     try {
-      onAdd(await imagePayload(file));
-      setFile(undefined);
+      onAdd(await Promise.all(files.map(artifactPayload)));
+      setFiles([]);
     } finally {
       setWorking(false);
     }
   }
 
   return (
-    <section className="history-card" aria-labelledby="optional-image-heading">
+    <section className="history-card" aria-labelledby="optional-artifacts-heading">
       <p className="eyebrow">Optional supporting artifact</p>
-      <h2 id="optional-image-heading">Add one image if useful</h2>
-      <p className="privacy-note">The Quick dump is enough. A JPEG, PNG, or WebP is reviewed inline and its bytes are not retained.</p>
-      <label htmlFor="later-google-image">Optional image</label>
-      <input id="later-google-image" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setFile(event.target.files?.[0])} />
-      <button className="quiet-button" disabled={!file || working} onClick={() => void addImage()} type="button">{working ? "Reviewing…" : "Review image"}</button>
+      <h2 id="optional-artifacts-heading">Add artifacts if useful</h2>
+      <p className="privacy-note">The Quick dump is enough. Up to five JPEG, PNG, WebP, or PDF artifacts are reviewed without retaining original files.</p>
+      <label htmlFor="later-google-artifacts">Optional supporting artifacts</label>
+      <input id="later-google-artifacts" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
+      <button className="quiet-button" disabled={!files.length || working} onClick={() => void addArtifacts()} type="button">{working ? "Reviewing…" : "Review artifacts"}</button>
     </section>
   );
 }
 
-async function imagePayload(file: File): Promise<{ base64: string; mimeType: string }> {
+async function artifactPayload(file: File): Promise<{ base64: string; mimeType: string }> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   return { base64: googleImageBytesToBase64(bytes), mimeType: file.type };
 }

@@ -72,6 +72,52 @@ describe("Google Pivot HTTP interface", () => {
     expect(JSON.stringify(body)).not.toContain("private-landlord-message.jpg");
   });
 
+  it("continues through a mixed JSON artifact batch and persists only content-free artifact state", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+    const validImage = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 2, 0xff, 0xd9]).toString("base64");
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          expectedVersion: 0,
+          idempotencyKey: "mixed-artifacts",
+          type: "start",
+          quickDump: "I need to sort the moving checklist.",
+          consentGiven: true,
+          artifacts: [
+            { base64: validImage, mimeType: "image/jpeg", filename: "private-message.jpg" },
+            { base64: Buffer.from("not an artifact").toString("base64"), mimeType: "application/pdf", filename: "private-checklist.pdf" }
+          ]
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository,
+      {
+        async extractSupportingArtifactClaims() { return { claims: [{ text: "The message asks for a response." }] }; },
+        async generate({ situationMap }) {
+          return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.artifacts).toMatchObject([
+      { artifactId: "artifact-1", status: "accepted" },
+      { artifactId: "artifact-2", status: "rejected" }
+    ]);
+    expect(JSON.stringify(body)).not.toContain("private-message.jpg");
+    expect(JSON.stringify(body)).not.toContain("private-checklist.pdf");
+    const saved = await repository.findByIdForOwner({ protocolId: "protocol-1", ownerSubject: "firebase-user-1" });
+    expect(JSON.stringify(saved)).not.toContain("private-message.jpg");
+    expect(JSON.stringify(saved)).not.toContain("not an artifact");
+  });
+
   it("handles a multipart image upload and gives explicit malformed feedback", async () => {
     const repository = createInMemoryGoogleProtocolRepository();
     await startGoogleProtocol(

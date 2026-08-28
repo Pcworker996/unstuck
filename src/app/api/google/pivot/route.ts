@@ -11,7 +11,7 @@ export async function POST(request: Request): Promise<Response> {
     request,
     authenticateFirebaseRequest,
     runtime.repository,
-    createGenkitGooglePivotGenerator(),
+    createGenkitGooglePivotGenerator(runtime.artifactStorage),
     runtime.adaptation
   );
 }

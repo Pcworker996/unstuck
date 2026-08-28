@@ -5,6 +5,10 @@ import {
   type SituationMap
 } from "../app/google-pivot-protocol";
 import { MAX_GOOGLE_IMAGE_BYTES } from "../app/google-image-artifact";
+import {
+  MAX_GOOGLE_ARTIFACT_BYTES,
+  type GoogleSupportingArtifactInput
+} from "../app/google-supporting-artifacts";
 import type { GoogleImageArtifactInput } from "../app/google-image-artifact";
 import {
   runGoogleProtocolCommand,
@@ -161,6 +165,10 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
       return parseStartCommand(body);
     case "add-image":
       return { type, image: parseImageInput(body.image) };
+    case "add-artifact":
+      return { type, artifact: parseSupportingArtifactInput(body.artifact) };
+    case "add-artifacts":
+      return { type, artifacts: parseSupportingArtifactsInput(body.artifacts) };
     case "approve-artifact-claim":
       if (typeof body.itemId !== "string" || !body.itemId.trim()) throw new HttpInputError("An artifact claim identifier is required.");
       return { type, itemId: body.itemId.trim() };
@@ -207,7 +215,49 @@ function parseStartCommand(body: Record<string, unknown>): Extract<GooglePivotCo
     quickDump: body.quickDump.trim(),
     consentGiven: body.consentGiven,
     saveRequested: body.saveRequested ?? false,
-    ...(body.image === undefined ? {} : { image: parseImageInput(body.image) })
+    ...(body.image === undefined ? {} : { image: parseImageInput(body.image) }),
+    ...(body.artifacts === undefined ? {} : { artifacts: parseSupportingArtifactsInput(body.artifacts) })
+  };
+}
+
+function parseSupportingArtifactsInput(value: unknown): GoogleSupportingArtifactInput[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new HttpInputError("At least one supporting artifact is required.");
+  }
+  return value.map(parseSupportingArtifactInput);
+}
+
+function parseSupportingArtifactInput(value: unknown): GoogleSupportingArtifactInput {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HttpInputError("A supporting artifact upload is required.");
+  }
+  const artifact = value as Record<string, unknown>;
+  if (artifact.bytes instanceof Uint8Array) {
+    if (artifact.bytes.length === 0 || artifact.bytes.length > MAX_GOOGLE_ARTIFACT_BYTES) {
+      throw new HttpInputError("A supporting artifact must be non-empty and 10 MB or smaller.");
+    }
+    const declaredMimeType = typeof artifact.declaredMimeType === "string"
+      ? artifact.declaredMimeType
+      : typeof artifact.mimeType === "string" ? artifact.mimeType : undefined;
+    return { bytes: artifact.bytes, ...(declaredMimeType ? { declaredMimeType } : {}) };
+  }
+  const base64 = artifact.base64 ?? artifact.data;
+  if (
+    typeof base64 !== "string" ||
+    !base64 ||
+    base64.length > Math.ceil(MAX_GOOGLE_ARTIFACT_BYTES * 4 / 3) + 4 ||
+    base64.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(base64)
+  ) {
+    throw new HttpInputError("The supporting artifact upload is malformed.");
+  }
+  const bytes = Uint8Array.from(Buffer.from(base64, "base64"));
+  if (bytes.length === 0 || bytes.length > MAX_GOOGLE_ARTIFACT_BYTES) {
+    throw new HttpInputError("A supporting artifact must be non-empty and 10 MB or smaller.");
+  }
+  return {
+    bytes,
+    ...(typeof artifact.mimeType === "string" ? { declaredMimeType: artifact.mimeType } : {})
   };
 }
 
@@ -215,32 +265,19 @@ function parseImageInput(value: unknown): GoogleImageArtifactInput {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new HttpInputError("An image upload is required.");
   }
-  const image = value as Record<string, unknown>;
-  if (image.bytes instanceof Uint8Array) {
-    return {
-      bytes: image.bytes,
-      ...(typeof image.declaredMimeType === "string" ? { declaredMimeType: image.declaredMimeType } : {})
-    };
+  let parsed: GoogleSupportingArtifactInput;
+  try {
+    parsed = parseSupportingArtifactInput(value);
+  } catch (error) {
+    if (error instanceof HttpInputError && error.message.includes("malformed")) {
+      throw new HttpInputError("The image upload is malformed.");
+    }
+    throw error;
   }
-
-  const base64 = image.base64 ?? image.data;
-  if (
-    typeof base64 !== "string" ||
-    !base64 ||
-    base64.length > Math.ceil(MAX_GOOGLE_IMAGE_BYTES * 4 / 3) + 4 ||
-    base64.length % 4 !== 0 ||
-    !/^[A-Za-z0-9+/]*={0,2}$/.test(base64)
-  ) {
-    throw new HttpInputError("The image upload is malformed.");
-  }
-  const bytes = Uint8Array.from(Buffer.from(base64, "base64"));
-  if (bytes.length === 0 || bytes.length > MAX_GOOGLE_IMAGE_BYTES) {
+  if (parsed.bytes.length > MAX_GOOGLE_IMAGE_BYTES) {
     throw new HttpInputError("The image upload is empty or larger than the 10 MB limit.");
   }
-  return {
-    bytes,
-    ...(typeof image.mimeType === "string" ? { declaredMimeType: image.mimeType } : {})
-  };
+  return parsed;
 }
 
 function isSituationMapSection(value: unknown): value is keyof SituationMap {
@@ -261,8 +298,14 @@ async function readBody(request: Request): Promise<unknown> {
     try {
       const form = await request.formData();
       const body: Record<string, unknown> = {};
+      const artifacts: GoogleSupportingArtifactInput[] = [];
       for (const [key, value] of form.entries()) {
-        if (key === "image" && value instanceof File) {
+        if ((key === "artifact" || key === "artifacts") && value instanceof File) {
+          artifacts.push({
+            bytes: new Uint8Array(await value.arrayBuffer()),
+            declaredMimeType: value.type || undefined
+          });
+        } else if (key === "image" && value instanceof File) {
           body.image = {
             bytes: new Uint8Array(await value.arrayBuffer()),
             declaredMimeType: value.type || undefined
@@ -271,6 +314,7 @@ async function readBody(request: Request): Promise<unknown> {
           body[key] = value;
         }
       }
+      if (artifacts.length > 0) body.artifacts = artifacts;
       if (typeof body.consentGiven === "string") body.consentGiven = body.consentGiven === "true";
       if (typeof body.saveRequested === "string") body.saveRequested = body.saveRequested === "true";
       if (typeof body.expectedVersion === "string") body.expectedVersion = Number(body.expectedVersion);
