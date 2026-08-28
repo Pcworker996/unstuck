@@ -28,6 +28,13 @@ Artifact repo:     unstuck
 The project ID identifies the Firebase/Google Cloud project. The Cloud Run
 service name and Artifact Registry repository name are separate names.
 
+Set the shell variables used by the setup commands:
+
+~~~bash
+PROJECT_ID=unstuck-4605f
+REGION=us-central1
+~~~
+
 ## One-time setup
 
 Run these commands from the repository directory.

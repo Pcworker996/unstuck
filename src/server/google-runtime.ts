@@ -21,6 +21,10 @@ export function getGoogleProtocolRuntime(): GoogleProtocolDependencies {
   if (!projectId) {
     throw new Error("FIREBASE_PROJECT_ID is required.");
   }
+  const artifactBucket = process.env.GOOGLE_TEMP_ARTIFACT_BUCKET?.trim();
+  if (!artifactBucket) {
+    throw new Error("GOOGLE_TEMP_ARTIFACT_BUCKET is required.");
+  }
 
   const app = getApps()[0] ?? initializeApp({ projectId });
   const firestore = getFirestore(app);
@@ -31,7 +35,7 @@ export function getGoogleProtocolRuntime(): GoogleProtocolDependencies {
       memoryRepository: createFirestoreGoogleMemoryRepository(firestore),
       embed: createGenkitGoogleEmbeddingProvider()
     },
-    artifactStorage: createGoogleCloudPdfStorage(storage.bucket(process.env.GOOGLE_TEMP_ARTIFACT_BUCKET?.trim() || undefined)),
+    artifactStorage: createGoogleCloudPdfStorage(storage.bucket(artifactBucket)),
     quota: createFirestoreGoogleQuotaService(firestore, googleQuotaLimitsFromEnvironment()),
     logger: createGoogleTelemetryLogger(),
     createId: () => crypto.randomUUID(),

@@ -11,14 +11,17 @@ The browser requires these Firebase web-app values:
 - `NEXT_PUBLIC_FIREBASE_PROJECT_ID`
 - `NEXT_PUBLIC_FIREBASE_APP_ID`
 
-The Cloud Run service requires `FIREBASE_PROJECT_ID` and, when PDF review is
-enabled, `GOOGLE_TEMP_ARTIFACT_BUCKET`. Firebase Admin uses Application
+The Cloud Run service requires `FIREBASE_PROJECT_ID` and
+`GOOGLE_TEMP_ARTIFACT_BUCKET`. Firebase Admin uses Application
 Default Credentials, so Cloud Run should run with a service account that can
 read/write Firestore `personalAccounts/{uid}/protocols/{protocolId}` documents
 and create/delete objects plus maintain the one-day lifecycle rule in the
 private temporary bucket. Grant `roles/datastore.user` and a least-privilege
 custom role containing `storage.buckets.get`, `storage.buckets.update`,
-`storage.objects.create`, and `storage.objects.delete`. Firebase ID-token
+`storage.objects.create`, and `storage.objects.delete`. The Firestore role is
+project-scoped; Firebase Admin bypasses Firestore rules, so owner isolation is
+enforced by verified-token ownership and application-controlled document paths,
+not by IAM. Firebase ID-token
 verification uses Google's public signing keys and does not require a separate
 IAM role. For local development, provide Google Application Default
 Credentials through the standard `GOOGLE_APPLICATION_CREDENTIALS` mechanism.

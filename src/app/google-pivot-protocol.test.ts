@@ -68,6 +68,48 @@ describe("Google Pivot Protocol", () => {
     expect(result.activity.map((event) => event.kind)).toEqual(["safety-completed", "fallback"]);
   });
 
+  it.each([
+    "I might harm another person right now, even though I need to finish this project.",
+    "I might kill someone right now.",
+    "I might harm my child right now.",
+    "I may kill my neighbor right now.",
+    "I might shoot someone right now.",
+    "I want to die right now.",
+    "I plan to overdose.",
+    "I might poison myself right now.",
+    "I am going to stab him right now.",
+    "I might hurt my kid right now.",
+    "I am thinking about hurting myself right now.",
+    "I am thinking about harming someone right now.",
+    "I am not safe now.",
+    "I am safe now but I might hurt myself.",
+    "I might harm my wife right now.",
+    "I am currently unsafe.",
+    "I feel unsafe at the moment.",
+    "I don't want to hurt myself, but I might.",
+    "I am not safe right now and need urgent help."
+  ])("preserves the direct-danger safety boundary: %s", async (quickDump) => {
+    const result = await runGooglePivotProtocol({ quickDump, consentGiven: true });
+
+    expect(result.kind).toBe("safety-interruption");
+  });
+
+  it.each([
+    "I am not in immediate danger, but I feel overwhelmed by this project.",
+    "I will not hurt someone right now.",
+    "I am not suicidal.",
+    "I am not going to hurt myself.",
+    "I hurt someone yesterday.",
+    "I might have hurt someone yesterday.",
+    "I was going to hurt myself yesterday.",
+    "I had suicidal thoughts but am safe now.",
+    "I do not feel unsafe right now."
+  ])("preserves the negated and historical safety boundary: %s", async (quickDump) => {
+    const result = await runGooglePivotProtocol({ quickDump, consentGiven: true });
+
+    expect(result.kind).toBe("pivot-protocol");
+  });
+
   it("returns a typed consent result without calling the generator", async () => {
     let generated = false;
     const generator: GooglePivotGenerator = {
