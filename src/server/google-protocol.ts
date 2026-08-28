@@ -304,12 +304,14 @@ function quotaReservation(command: GooglePivotCommand, current: Extract<GooglePi
     return { modelUnits: 0, artifactUnits: 0 };
   }
   if (command.type === "record-outcome") {
-    return { modelUnits: current?.saveRequested ? 1 : 0, artifactUnits: 0 };
+    return { modelUnits: current?.saveRequested ? 2 : 0, artifactUnits: 0 };
   }
   const artifactUnits = command.type === "start"
     ? (command.image ? 1 : 0) + (command.artifacts?.length ?? 0)
     : command.type === "add-image" ? 1 : command.type === "add-artifact" ? 1 : command.type === "add-artifacts" ? command.artifacts.length : 0;
-  return { modelUnits: 1 + artifactUnits, artifactUnits };
+  // Reserve for generation plus bounded repair/preparation/adaptation work.
+  // Artifact extraction is itself model work, so each artifact gets two units.
+  return { modelUnits: 4 + artifactUnits * 2, artifactUnits };
 }
 
 function mayUsePlatform(command: GooglePivotCommand, current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined, hasAdaptation: boolean): boolean {
@@ -330,7 +332,7 @@ function mayUsePlatform(command: GooglePivotCommand, current: Extract<GooglePivo
   if (command.type === "exclude-memory" || command.type === "forget-memory" || command.type === "delete-memory") {
     return hasAdaptation && current.memoryExplanations.some((memory) => memory.memoryId === command.memoryId);
   }
-  if (command.type === "record-outcome") return current.phase === "selected" && Boolean(current.selectedPivot) && (!command.outcome.pivotTimeSeconds || (Number.isInteger(command.outcome.pivotTimeSeconds) && command.outcome.pivotTimeSeconds >= 0));
+  if (command.type === "record-outcome") return current.phase === "selected" && Boolean(current.selectedPivot) && ["completed", "partly-helpful", "not-a-fit", "skipped"].includes(command.outcome.status) && (command.outcome.agencyShift === undefined || ["more-able", "about-as-able", "less-able"].includes(command.outcome.agencyShift)) && (command.outcome.pivotTimeSeconds === undefined || (Number.isInteger(command.outcome.pivotTimeSeconds) && command.outcome.pivotTimeSeconds >= 0));
   return false;
 }
 

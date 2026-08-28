@@ -4,6 +4,7 @@ export type GoogleTelemetryStatus = "ok" | "fallback" | "conflict" | "invalid" |
 
 export type GoogleTelemetryEvent = {
   correlationId: string;
+  protocolId?: string;
   ownerSubject?: string;
   event: string;
   tool: string;
@@ -24,6 +25,7 @@ type LogSink = { info: (message: string) => void };
 
 const TELEMETRY_FIELDS = [
   "correlationId",
+  "protocolId",
   "ownerSubjectHash",
   "event",
   "tool",
@@ -52,12 +54,13 @@ export function createGoogleTelemetryLogger(sink: LogSink = console): GoogleTele
     record(event) {
       const safeEvent: Record<string, unknown> = {
         correlationId: correlationIdForGoogleRequest(event.correlationId),
+        ...(event.protocolId ? { protocolId: boundedLabel(event.protocolId) } : {}),
         ownerSubjectHash: event.ownerSubject ? hashGoogleOwnerSubject(event.ownerSubject) : "anonymous",
         event: boundedLabel(event.event),
         tool: boundedLabel(event.tool),
         status: event.status
       };
-      for (const field of TELEMETRY_FIELDS.slice(5)) {
+      for (const field of TELEMETRY_FIELDS.slice(6)) {
         const value = event[field as keyof GoogleTelemetryEvent];
         if (value !== undefined) safeEvent[field] = safeTelemetryValue(field, value);
       }

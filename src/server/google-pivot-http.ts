@@ -57,16 +57,19 @@ async function handleGooglePivotCommandPost(
   const correlationId = correlationIdForGoogleRequest(request.headers.get("x-correlation-id"));
   const startedAt = Date.now();
   let ownerSubject: string | undefined;
+  let protocolId: string | undefined;
   const respond = (value: unknown, status: number, telemetry: { status: Parameters<GoogleTelemetryLogger["record"]>[0]["status"]; fallbackKind?: string; resultCount?: number }) => {
     try {
       options?.logger?.record({
         correlationId,
+        protocolId,
         ownerSubject,
         event: `google-pivot-${route}`,
         tool: "google-pivot-protocol",
         status: telemetry.status,
         latencyMs: Date.now() - startedAt,
         modelId: process.env.VERTEX_GEMINI_MODEL_ID?.trim() || "gemini-3.5-flash",
+        retryCount: 0,
         fallbackKind: telemetry.fallbackKind,
         resultCount: telemetry.resultCount
       });
@@ -80,6 +83,7 @@ async function handleGooglePivotCommandPost(
     ownerSubject = identity.subject;
     const body = await readBody(request);
     const input = parseInput(body, request, route);
+    protocolId = input.protocolId;
     const result = await runGoogleProtocolCommand(
       {
         subject: identity.subject,

@@ -14,6 +14,7 @@ describe("Google telemetry", () => {
 
     logger.record({
       correlationId: correlationIdForGoogleRequest("request-1"),
+      protocolId: "protocol-1",
       ownerSubject: "firebase-user-1",
       event: "pivot-command",
       tool: "google-pivot-protocol",
@@ -32,6 +33,7 @@ describe("Google telemetry", () => {
     const parsed = JSON.parse(messages[0]);
     expect(parsed).toEqual({
       correlationId: correlationIdForGoogleRequest("request-1"),
+      protocolId: "protocol-1",
       ownerSubjectHash: hashGoogleOwnerSubject("firebase-user-1"),
       event: "pivot-command",
       tool: "google-pivot-protocol",
