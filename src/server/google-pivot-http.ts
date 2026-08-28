@@ -7,6 +7,7 @@ import {
 import { MAX_GOOGLE_IMAGE_BYTES } from "../app/google-image-artifact";
 import {
   MAX_GOOGLE_ARTIFACT_BYTES,
+  MAX_GOOGLE_ARTIFACT_TOTAL_BYTES,
   type GoogleSupportingArtifactInput
 } from "../app/google-supporting-artifacts";
 import type { GoogleImageArtifactInput } from "../app/google-image-artifact";
@@ -22,6 +23,8 @@ type GooglePivotHttpOptions = {
   quota?: GoogleProtocolDependencies["quota"];
   logger?: GoogleTelemetryLogger;
 };
+
+const MAX_GOOGLE_MULTIPART_BODY_BYTES = MAX_GOOGLE_ARTIFACT_TOTAL_BYTES + 512 * 1024;
 
 export async function handleGooglePivotPost(
   request: Request,
@@ -344,6 +347,10 @@ function isPivotOutcome(value: unknown): value is Extract<GooglePivotCommand, { 
 
 async function readBody(request: Request): Promise<unknown> {
   if (request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data")) {
+    const contentLength = request.headers.get("content-length");
+    if (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > MAX_GOOGLE_MULTIPART_BODY_BYTES)) {
+      throw new HttpInputError("The supporting artifact upload is too large.");
+    }
     try {
       const form = await request.formData();
       const body: Record<string, unknown> = {};

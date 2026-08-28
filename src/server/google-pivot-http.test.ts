@@ -195,6 +195,26 @@ describe("Google Pivot HTTP interface", () => {
     await expect(malformed.json()).resolves.toMatchObject({ kind: "invalid-request", message: "The image upload is malformed." });
   });
 
+  it("rejects an oversized multipart body before buffering it", async () => {
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        headers: {
+          "content-type": "multipart/form-data; boundary=unused",
+          "content-length": String(26 * 1024 * 1024)
+        }
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      createInMemoryGoogleProtocolRepository()
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "invalid-request",
+      message: "The supporting artifact upload is too large."
+    });
+  });
+
   it("does not allow an unauthenticated Quick dump", async () => {
     const response = await handleGooglePivotPost(
       new Request("http://localhost/api/google/pivot", { method: "POST" }),

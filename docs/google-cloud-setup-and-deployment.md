@@ -112,15 +112,19 @@ gcloud storage buckets update "gs://$BUCKET" \
 ~~~
 
 Create a project-level custom role for the runtime service account and grant
-only the bucket metadata and object permissions used by the application:
+only the bucket metadata and object permissions used by the application. If
+the service account does not already exist, create it first:
 
 ~~~bash
+gcloud iam service-accounts create unstuck-runtime \
+  --project="$PROJECT_ID" \
+  --display-name="Unstuck Cloud Run runtime"
 gcloud iam roles create unstuckArtifactStorage \
   --project="$PROJECT_ID" \
   --title="Unstuck temporary artifact storage" \
-  --permissions=storage.buckets.get,storage.buckets.update,storage.objects.create,storage.objects.delete \
+  --permissions=storage.buckets.get,storage.buckets.update,storage.objects.create,storage.objects.get,storage.objects.delete \
   --stage=GA
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
   --member="serviceAccount:unstuck-runtime@$PROJECT_ID.iam.gserviceaccount.com" \
   --role="projects/$PROJECT_ID/roles/unstuckArtifactStorage"
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
@@ -128,9 +132,11 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --role="roles/datastore.user"
 ~~~
 
-The custom role is needed because the runtime verifies and installs the
-lifecycle rule on first use. Do not grant the bucket public access. Use the
-same `$BUCKET` value as `GOOGLE_TEMP_ARTIFACT_BUCKET` below.
+The custom role is bound to this bucket rather than the project. It is needed
+because the runtime verifies and installs the lifecycle rule on first use and
+passes private `gs://` objects to Gemini for extraction. Do not grant the
+bucket public access. Use the same `$BUCKET` value as
+`GOOGLE_TEMP_ARTIFACT_BUCKET` below.
 
 ### Create the Docker repository
 

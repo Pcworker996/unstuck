@@ -85,9 +85,10 @@ for the runtime requirements and Firestore ownership path.
 The complete setup guide explains:
 
 - Selecting project unstuck-4605f
-- Enabling Artifact Registry, Cloud Run, and Vertex AI APIs
+- Enabling Artifact Registry, Cloud Run, Vertex AI, Firestore, and Cloud Storage APIs
+- Creating the empty Firestore database, indexes, and private temporary PDF bucket
 - Creating the Docker repository
-- Granting the Cloud Run runtime service account Vertex AI access
+- Creating the Cloud Run runtime service account and granting it Vertex AI, Firestore, and bucket-scoped access
 - Configuring Docker authentication
 - Building, pushing, and deploying a new image
 - Verifying the Cloud Run service
