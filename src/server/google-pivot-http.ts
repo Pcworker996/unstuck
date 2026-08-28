@@ -15,17 +15,23 @@ import {
   type GoogleProtocolRepository,
   type GoogleProtocolDependencies
 } from "./google-protocol";
+import { correlationIdForGoogleRequest, type GoogleTelemetryLogger } from "./google-telemetry";
 
 type Authenticate = (request: Request) => Promise<{ subject: string }>;
+type GooglePivotHttpOptions = {
+  quota?: GoogleProtocolDependencies["quota"];
+  logger?: GoogleTelemetryLogger;
+};
 
 export async function handleGooglePivotPost(
   request: Request,
   authenticate: Authenticate,
   repository: GoogleProtocolRepository,
   generator?: GooglePivotGenerator,
-  adaptation?: GoogleProtocolDependencies["adaptation"]
+  adaptation?: GoogleProtocolDependencies["adaptation"],
+  options?: GooglePivotHttpOptions
 ): Promise<Response> {
-  return handleGooglePivotCommandPost(request, authenticate, repository, generator, adaptation, "protocol");
+  return handleGooglePivotCommandPost(request, authenticate, repository, generator, adaptation, options, "protocol");
 }
 
 export async function handleGooglePivotOutcomePost(
@@ -33,9 +39,10 @@ export async function handleGooglePivotOutcomePost(
   authenticate: Authenticate,
   repository: GoogleProtocolRepository,
   generator?: GooglePivotGenerator,
-  adaptation?: GoogleProtocolDependencies["adaptation"]
+  adaptation?: GoogleProtocolDependencies["adaptation"],
+  options?: GooglePivotHttpOptions
 ): Promise<Response> {
-  return handleGooglePivotCommandPost(request, authenticate, repository, generator, adaptation, "outcome");
+  return handleGooglePivotCommandPost(request, authenticate, repository, generator, adaptation, options, "outcome");
 }
 
 async function handleGooglePivotCommandPost(
@@ -44,10 +51,33 @@ async function handleGooglePivotCommandPost(
   repository: GoogleProtocolRepository,
   generator: GooglePivotGenerator | undefined,
   adaptation: GoogleProtocolDependencies["adaptation"],
+  options: GooglePivotHttpOptions | undefined,
   route: "protocol" | "outcome"
 ): Promise<Response> {
+  const correlationId = correlationIdForGoogleRequest(request.headers.get("x-correlation-id"));
+  const startedAt = Date.now();
+  let ownerSubject: string | undefined;
+  const respond = (value: unknown, status: number, telemetry: { status: Parameters<GoogleTelemetryLogger["record"]>[0]["status"]; fallbackKind?: string; resultCount?: number }) => {
+    try {
+      options?.logger?.record({
+        correlationId,
+        ownerSubject,
+        event: `google-pivot-${route}`,
+        tool: "google-pivot-protocol",
+        status: telemetry.status,
+        latencyMs: Date.now() - startedAt,
+        modelId: process.env.VERTEX_GEMINI_MODEL_ID?.trim() || "gemini-3.5-flash",
+        fallbackKind: telemetry.fallbackKind,
+        resultCount: telemetry.resultCount
+      });
+    } catch {
+      // Observability is best-effort and must never change the protocol response.
+    }
+    return json(value, status, correlationId);
+  };
   try {
     const identity = await authenticate(request);
+    ownerSubject = identity.subject;
     const body = await readBody(request);
     const input = parseInput(body, request, route);
     const result = await runGoogleProtocolCommand(
@@ -58,49 +88,64 @@ async function handleGooglePivotCommandPost(
         idempotencyKey: input.idempotencyKey,
         command: input.command
       },
-      { repository, adaptation },
+      { repository, adaptation, quota: options?.quota },
       generator
     );
     if (result.kind === "state") {
-      return json(result.state, 200);
+      return respond(result.state, 200, {
+        status: result.state.fallback ? "fallback" : "ok",
+        fallbackKind: result.state.fallback ? "curated-state" : undefined,
+        resultCount: result.state.retrievedMemories.length + result.state.artifacts.length
+      });
     }
     if (result.kind === "not-found") {
-      return json({ kind: "not-found", message: "The private protocol was not found." }, 404);
+      return respond({ kind: "not-found", message: "The private protocol was not found." }, 404, { status: "invalid" });
     }
     if (result.kind === "consent-required") {
-      return json(result, 400);
+      return respond(result, 400, { status: "invalid" });
     }
     if (result.kind === "safety-interruption") {
-      return json(result.result, 200);
+      return respond(result.result, 200, { status: "fallback", fallbackKind: "safety-interruption" });
+    }
+    if (result.kind === "quota-exhausted") {
+      return respond(result, 429, { status: "quota-exhausted", fallbackKind: "quota-exhausted" });
+    }
+    if (result.kind === "dependency-unavailable") {
+      return respond(result.state ?? result, result.state ? 200 : 503, {
+        status: "fallback",
+        fallbackKind: "dependency-unavailable",
+        resultCount: result.state ? result.state.retrievedMemories.length + result.state.artifacts.length : undefined
+      });
     }
     if (result.kind === "conflict") {
-      return json({
+      return respond({
         kind: "conflict",
         message: "This Situation map changed in another session. Reload it before editing again.",
         protocol: result.protocol
-      }, 409);
+      }, 409, { status: "conflict" });
     }
     if (result.kind === "idempotency-conflict") {
-      return json({
+      return respond({
         kind: "idempotency-conflict",
         message: "This idempotency key was already used for a different command.",
         protocol: result.protocol
-      }, 409);
+      }, 409, { status: "conflict" });
     }
-    return json(result, 400);
+    return respond(result, 400, { status: "invalid" });
   } catch (error) {
     if (error instanceof FirebaseAuthenticationError) {
-      return json(
+      return respond(
         { kind: "unauthorized", message: "You need to sign in to use the Pivot Protocol." },
-        401
+        401,
+        { status: "unauthorized" }
       );
     }
 
     if (error instanceof HttpInputError) {
-      return json({ kind: "invalid-request", message: error.message }, 400);
+      return respond({ kind: "invalid-request", message: error.message }, 400, { status: "invalid" });
     }
 
-    return json({ kind: "server-error", message: "The Pivot Protocol is temporarily unavailable." }, 500);
+    return respond({ kind: "server-error", message: "The Pivot Protocol is temporarily unavailable." }, 500, { status: "error", fallbackKind: "dependency-unavailable" });
   }
 }
 
@@ -330,10 +375,12 @@ async function readBody(request: Request): Promise<unknown> {
   }
 }
 
-function json(value: unknown, status: number): Response {
+function json(value: unknown, status: number, correlationId?: string): Response {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (correlationId) headers.set("x-correlation-id", correlationId);
   return new Response(JSON.stringify(value), {
     status,
-    headers: { "content-type": "application/json" }
+    headers
   });
 }
 

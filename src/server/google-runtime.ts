@@ -6,6 +6,8 @@ import { createFirestoreGoogleProtocolRepository } from "./firestore-google-prot
 import { createFirestoreGoogleMemoryRepository } from "./firestore-google-memory-repository";
 import { createGenkitGoogleEmbeddingProvider } from "./genkit-google-pivot-generator";
 import { createGoogleCloudPdfStorage } from "./google-pdf-storage";
+import { createFirestoreGoogleQuotaService, googleQuotaLimitsFromEnvironment } from "./google-quotas";
+import { createGoogleTelemetryLogger } from "./google-telemetry";
 import type { GoogleProtocolDependencies } from "./google-protocol";
 
 let runtime: GoogleProtocolDependencies | undefined;
@@ -30,6 +32,8 @@ export function getGoogleProtocolRuntime(): GoogleProtocolDependencies {
       embed: createGenkitGoogleEmbeddingProvider()
     },
     artifactStorage: createGoogleCloudPdfStorage(storage.bucket(process.env.GOOGLE_TEMP_ARTIFACT_BUCKET?.trim() || undefined)),
+    quota: createFirestoreGoogleQuotaService(firestore, googleQuotaLimitsFromEnvironment()),
+    logger: createGoogleTelemetryLogger(),
     createId: () => crypto.randomUUID(),
     now: () => new Date().toISOString()
   };

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { FirebaseAuthenticationError } from "./firebase-auth";
 import { handleGooglePivotOutcomePost, handleGooglePivotPost } from "./google-pivot-http";
 import { createInMemoryGoogleProtocolRepository, startGoogleProtocol } from "./google-protocol";
+import { createGoogleTelemetryLogger } from "./google-telemetry";
 
 describe("Google Pivot HTTP interface", () => {
   it("runs the authenticated Quick dump flow", async () => {
@@ -28,6 +29,36 @@ describe("Google Pivot HTTP interface", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ kind: "pivot-protocol" });
+  });
+
+  it("returns a correlation id and emits content-free telemetry", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+    const messages: string[] = [];
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        headers: { "x-correlation-id": "client-private-value" },
+        body: JSON.stringify({
+          protocolId: "protocol-1", expectedVersion: 0, idempotencyKey: "telemetry-1",
+          quickDump: "Private Quick dump that must not reach logs.", consentGiven: true
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository,
+      undefined,
+      undefined,
+      { logger: createGoogleTelemetryLogger({ info: (message) => messages.push(message) }) }
+    );
+
+    expect(response.headers.get("x-correlation-id")).toMatch(/^corr-[a-f0-9]{24}$/);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).not.toContain("Private Quick dump");
+    expect(messages[0]).not.toContain("firebase-user-1");
+    expect(JSON.parse(messages[0])).toMatchObject({ event: "google-pivot-protocol", tool: "google-pivot-protocol", status: "ok" });
   });
 
   it("accepts an optional image in JSON without accepting a client filename", async () => {

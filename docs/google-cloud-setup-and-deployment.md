@@ -157,9 +157,11 @@ gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --region "$REGION" \
   --service-account "unstuck-runtime@$PROJECT_ID.iam.gserviceaccount.com" \
+  --min 0 \
+  --max 3 \
   --allow-unauthenticated \
   --set-env-vars \
-"FIREBASE_PROJECT_ID=$PROJECT_ID,NEXT_PUBLIC_UNSTUCK_RUNTIME=google,GOOGLE_CLOUD_LOCATION=$REGION,VERTEX_GEMINI_MODEL_ID=gemini-3.5-flash"
+"FIREBASE_PROJECT_ID=$PROJECT_ID,NEXT_PUBLIC_UNSTUCK_RUNTIME=google,GOOGLE_CLOUD_LOCATION=$REGION,VERTEX_GEMINI_MODEL_ID=gemini-3.5-flash,GOOGLE_DAILY_MODEL_ACCOUNT_LIMIT=100,GOOGLE_DAILY_MODEL_GLOBAL_LIMIT=1000,GOOGLE_DAILY_ARTIFACT_ACCOUNT_LIMIT=10,GOOGLE_DAILY_ARTIFACT_GLOBAL_LIMIT=100"
 ~~~
 
 gcloud run deploy creates a new revision and routes traffic to it. The service
@@ -214,9 +216,11 @@ gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --region "$REGION" \
   --service-account "unstuck-runtime@$PROJECT_ID.iam.gserviceaccount.com" \
+  --min 0 \
+  --max 3 \
   --allow-unauthenticated \
   --set-env-vars \
-"FIREBASE_PROJECT_ID=$PROJECT_ID,NEXT_PUBLIC_UNSTUCK_RUNTIME=google,GOOGLE_CLOUD_LOCATION=$REGION,VERTEX_GEMINI_MODEL_ID=gemini-3.5-flash"
+"FIREBASE_PROJECT_ID=$PROJECT_ID,NEXT_PUBLIC_UNSTUCK_RUNTIME=google,GOOGLE_CLOUD_LOCATION=$REGION,VERTEX_GEMINI_MODEL_ID=gemini-3.5-flash,GOOGLE_DAILY_MODEL_ACCOUNT_LIMIT=100,GOOGLE_DAILY_MODEL_GLOBAL_LIMIT=1000,GOOGLE_DAILY_ARTIFACT_ACCOUNT_LIMIT=10,GOOGLE_DAILY_ARTIFACT_GLOBAL_LIMIT=100"
 ~~~
 
 ## Important notes
@@ -229,3 +233,9 @@ gcloud run deploy "$SERVICE" \
 - If a NEXT_PUBLIC_* build value changes, rebuild the image because it is
   compiled into the browser bundle.
 - Each deployment creates a new immutable Cloud Run revision.
+- `--min 0` enables scale-to-zero and `--max 3` keeps the judging deployment bounded.
+- Daily model and artifact counters are transactionally reserved in Firestore for
+  each account and for the global deployment. A rejected reservation returns a
+  typed quota response without changing the current protocol state.
+- The documented limits are intentionally conservative; lower them for public
+  demonstrations or raise them only with a matching budget review.

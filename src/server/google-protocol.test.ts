@@ -9,6 +9,7 @@ import {
   runGoogleProtocolCommand,
   startGoogleProtocol
 } from "./google-protocol";
+import { createInMemoryGoogleMemoryRepository } from "./google-memory";
 
 describe("Google Protocol", () => {
   it("creates and reloads a minimal protocol for its authenticated owner", async () => {
@@ -327,5 +328,111 @@ describe("Google Protocol", () => {
     expect(first).toMatchObject({ kind: "state", replayed: false, state: { enrichment: "saved" } });
     expect(replay).toMatchObject({ kind: "state", replayed: true, state: { enrichment: "saved" } });
     expect(enrichments).toBe(1);
+  });
+
+  it("returns a typed quota response without changing valid protocol state", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-28T12:00:00.000Z" }
+    );
+    const quota = {
+      async reserve() {
+        return {
+          allowed: false as const,
+          scope: "account" as const,
+          resource: "model" as const,
+          limit: 1,
+          message: "The daily model-use quota is exhausted. Your valid protocol state is preserved; please continue tomorrow."
+        };
+      }
+    };
+    let generated = false;
+    const result = await runGoogleProtocolCommand({
+      subject: "firebase-user-1",
+      protocolId: "protocol-1",
+      expectedVersion: 0,
+      idempotencyKey: "start-1",
+      command: { type: "start", quickDump: "Private Quick dump.", consentGiven: true }
+    }, {
+      repository,
+      quota,
+      now: () => "2026-08-28T12:00:00.000Z"
+    }, {
+      async generate() {
+        generated = true;
+        throw new Error("must not call Gemini after quota exhaustion");
+      }
+    });
+
+    expect(result).toMatchObject({ kind: "quota-exhausted", resource: "model", quickDump: "Private Quick dump." });
+    expect(generated).toBe(false);
+    await expect(loadGoogleProtocol({ subject: "firebase-user-1", protocolId: "protocol-1" }, { repository }))
+      .resolves.toMatchObject({ kind: "protocol", protocol: { version: 0 } });
+  });
+
+  it("keeps a valid generated state visible when its Firestore write fails", async () => {
+    const baseRepository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository: baseRepository, createId: () => "protocol-1", now: () => "2026-08-28T12:00:00.000Z" }
+    );
+    const repository = {
+      ...baseRepository,
+      async saveState() {
+        throw new Error("Firestore timeout");
+      }
+    };
+
+    const result = await runGoogleProtocolCommand({
+      subject: "firebase-user-1",
+      protocolId: "protocol-1",
+      expectedVersion: 0,
+      idempotencyKey: "start-1",
+      command: { type: "start", quickDump: "Private Quick dump.", consentGiven: true, saveRequested: true }
+    }, { repository });
+
+    expect(result).toMatchObject({
+      kind: "dependency-unavailable",
+      state: { kind: "pivot-protocol", fallback: true, persistence: "pending", enrichment: "unavailable" }
+    });
+    if (result.kind !== "dependency-unavailable" || !result.state) return;
+    expect(result.state.derivedMemory).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("Firestore timeout");
+  });
+
+  it("does not expose Derived memory when embedding fails during outcome enrichment", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    const memoryRepository = createInMemoryGoogleMemoryRepository();
+    const adaptation = {
+      memoryRepository,
+      async embed() { throw new Error("embedding timeout"); }
+    };
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-28T12:00:00.000Z" }
+    );
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "grounding", alternativePivotKinds: ["breathing-focus", "reaching-out"], whyThisPivot: "A small next step." };
+      }
+    };
+    await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-1", expectedVersion: 0, idempotencyKey: "start-1",
+      command: { type: "start", quickDump: "I am stuck.", consentGiven: true, saveRequested: true }
+    }, { repository, adaptation }, generator);
+    await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-1", expectedVersion: 1, idempotencyKey: "select-1",
+      command: { type: "select-pivot", pivotKind: "grounding" }
+    }, { repository, adaptation }, generator);
+    const outcome = await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-1", expectedVersion: 2, idempotencyKey: "outcome-1",
+      command: { type: "record-outcome", outcome: { status: "completed" } }
+    }, { repository, adaptation }, generator);
+
+    expect(outcome).toMatchObject({ kind: "state", state: { enrichment: "unavailable" } });
+    if (outcome.kind !== "state") return;
+    expect(outcome.state.derivedMemory).toBeUndefined();
+    await expect(memoryRepository.listMemories("firebase-user-1")).resolves.toEqual([]);
   });
 });

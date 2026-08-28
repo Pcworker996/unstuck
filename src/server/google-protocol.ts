@@ -10,6 +10,8 @@ import {
 import type { GooglePivotAdaptation } from "../app/google-pivot-protocol";
 import type { GoogleMemoryRepository } from "./google-memory";
 import type { GooglePdfTemporaryStorage } from "../app/google-supporting-artifacts";
+import type { GoogleQuotaService } from "./google-quotas";
+import type { GoogleTelemetryLogger } from "./google-telemetry";
 
 export type GoogleProtocol = {
   id: string;
@@ -69,6 +71,8 @@ export type GoogleProtocolDependencies = {
     limit?: number;
   };
   artifactStorage?: GooglePdfTemporaryStorage;
+  quota?: GoogleQuotaService;
+  logger?: GoogleTelemetryLogger;
 };
 
 export type GoogleProtocolResult =
@@ -82,7 +86,9 @@ export type GoogleProtocolCommandResult =
   | { kind: "idempotency-conflict"; protocol: GoogleProtocol }
   | { kind: "consent-required" }
   | { kind: "safety-interruption"; result: Extract<GooglePivotResult, { kind: "safety-interruption" }> }
-  | { kind: "invalid-command"; message: string };
+  | { kind: "invalid-command"; message: string }
+  | { kind: "quota-exhausted"; message: string; resource: "model" | "artifact"; state?: Extract<GooglePivotResult, { kind: "pivot-protocol" }>; quickDump?: string }
+  | { kind: "dependency-unavailable"; message: string; state?: Extract<GooglePivotResult, { kind: "pivot-protocol" }>; quickDump?: string };
 
 export async function startGoogleProtocol(
   input: { subject: string },
@@ -158,7 +164,7 @@ export async function runGoogleProtocolCommand(
     idempotencyKey: string;
     command: GooglePivotCommand;
   },
-  dependencies: Pick<GoogleProtocolDependencies, "repository" | "adaptation">,
+  dependencies: Pick<GoogleProtocolDependencies, "repository" | "adaptation"> & Partial<Pick<GoogleProtocolDependencies, "quota" | "now">>,
   generator?: GooglePivotGenerator
 ): Promise<GoogleProtocolCommandResult> {
   if (input.command.type === "start") {
@@ -166,20 +172,38 @@ export async function runGoogleProtocolCommand(
     if (safetyResult) return { kind: "safety-interruption", result: safetyResult };
   }
 
-  const existing = await dependencies.repository.findByIdForOwner({
-    protocolId: input.protocolId,
-    ownerSubject: input.subject
-  });
+  let existing: StoredGoogleProtocol | undefined;
+  try {
+    existing = await dependencies.repository.findByIdForOwner({
+      protocolId: input.protocolId,
+      ownerSubject: input.subject
+    });
+  } catch {
+    return {
+      kind: "dependency-unavailable",
+      message: "The private protocol store is temporarily unavailable; your Quick dump was not processed.",
+      ...(input.command.type === "start" ? { quickDump: input.command.quickDump } : {})
+    };
+  }
   if (!existing) {
     return { kind: "not-found" };
   }
 
-  const replay = await dependencies.repository.findIdempotent({
-    protocolId: input.protocolId,
-    ownerSubject: input.subject,
-    idempotencyKey: input.idempotencyKey,
-    fingerprint: commandFingerprint(input.command)
-  });
+  let replay: IdempotencyLookup | undefined;
+  try {
+    replay = await dependencies.repository.findIdempotent({
+      protocolId: input.protocolId,
+      ownerSubject: input.subject,
+      idempotencyKey: input.idempotencyKey,
+      fingerprint: commandFingerprint(input.command)
+    });
+  } catch {
+    return {
+      kind: "dependency-unavailable",
+      message: "The private protocol store is temporarily unavailable; your valid state was preserved.",
+      ...(currentState(existing) ? { state: currentState(existing) } : {})
+    };
+  }
   if (replay?.kind === "conflict") {
     return { kind: "idempotency-conflict", protocol: visibleProtocol(replay.protocol) };
   }
@@ -194,6 +218,33 @@ export async function runGoogleProtocolCommand(
   const current = existing.pivotState && isPivotState(existing.pivotState)
     ? normalizePivotState(existing.pivotState)
     : undefined;
+  if (dependencies.quota) {
+    const reservation = quotaReservation(input.command, current);
+    try {
+      const quota = await dependencies.quota.reserve({
+        ownerSubject: input.subject,
+        day: (dependencies.now?.() ?? new Date().toISOString()).slice(0, 10),
+        reservationKey: `${input.protocolId}:${input.idempotencyKey}`,
+        ...reservation
+      });
+      if (!quota.allowed) {
+        return {
+          kind: "quota-exhausted",
+          message: quota.message,
+          resource: quota.resource,
+          ...(current ? { state: current } : {}),
+          ...(input.command.type === "start" ? { quickDump: input.command.quickDump } : {})
+        };
+      }
+    } catch {
+      return {
+        kind: "dependency-unavailable",
+        message: "Quota controls are temporarily unavailable; your valid state was preserved.",
+        ...(current ? { state: current } : {}),
+        ...(input.command.type === "start" ? { quickDump: input.command.quickDump } : {})
+      };
+    }
+  }
   const adaptation = dependencies.adaptation
     ? adaptationFor({ ...dependencies.adaptation, ownerSubject: input.subject })
     : undefined;
@@ -207,14 +258,29 @@ export async function runGoogleProtocolCommand(
   }
 
   const nextState = { ...result.state, version: existing.version + 1 };
-  const saved = await dependencies.repository.saveState({
-    protocolId: input.protocolId,
-    ownerSubject: input.subject,
-    expectedVersion: input.expectedVersion,
-    idempotencyKey: input.idempotencyKey,
-    fingerprint: commandFingerprint(input.command),
-    state: nextState
-  });
+  let saved: GoogleProtocolMutation;
+  try {
+    saved = await dependencies.repository.saveState({
+      protocolId: input.protocolId,
+      ownerSubject: input.subject,
+      expectedVersion: input.expectedVersion,
+      idempotencyKey: input.idempotencyKey,
+      fingerprint: commandFingerprint(input.command),
+      state: nextState
+    });
+  } catch {
+    if (nextState.derivedMemory && dependencies.adaptation) {
+      await dependencies.adaptation.memoryRepository.deleteMemory({
+        ownerSubject: input.subject,
+        memoryId: input.protocolId
+      }).catch(() => undefined);
+    }
+    return {
+      kind: "dependency-unavailable",
+      message: "The private protocol store is temporarily unavailable; your valid state was preserved for retry.",
+      state: stateAfterPersistenceFailure(nextState)
+    };
+  }
   if (saved.kind === "conflict") {
     return { kind: "conflict", protocol: saved.protocol };
   }
@@ -225,6 +291,36 @@ export async function runGoogleProtocolCommand(
     return { kind: "idempotency-conflict", protocol: saved.protocol };
   }
   return { kind: "state", state: nextState, replayed: false };
+}
+
+function currentState(protocol: StoredGoogleProtocol): Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined {
+  return protocol.pivotState && isPivotState(protocol.pivotState)
+    ? normalizePivotState(protocol.pivotState)
+    : undefined;
+}
+
+function quotaReservation(command: GooglePivotCommand, current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined): { modelUnits: number; artifactUnits: number } {
+  if (command.type === "approve-artifact-claim" || command.type === "select-pivot" || command.type === "dismiss-pivot") {
+    return { modelUnits: 0, artifactUnits: 0 };
+  }
+  if (command.type === "record-outcome") {
+    return { modelUnits: current?.saveRequested ? 1 : 0, artifactUnits: 0 };
+  }
+  const artifactUnits = command.type === "start"
+    ? (command.image ? 1 : 0) + (command.artifacts?.length ?? 0)
+    : command.type === "add-image" ? 1 : command.type === "add-artifact" ? 1 : command.type === "add-artifacts" ? command.artifacts.length : 0;
+  return { modelUnits: 1 + artifactUnits, artifactUnits };
+}
+
+function stateAfterPersistenceFailure(state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
+  return {
+    ...state,
+    persistence: state.persistence === "saved" ? "pending" : state.persistence,
+    enrichment: "unavailable",
+    derivedMemory: undefined,
+    fallback: true,
+    activity: [...state.activity, { kind: "fallback", message: "The private protocol store is temporarily unavailable; this valid state can be retried." }]
+  };
 }
 
 function adaptationFor(input: {

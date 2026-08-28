@@ -752,7 +752,7 @@ async function recordOutcome(
         ...baseState,
         enrichment: "unavailable",
         pendingDerivedContext: undefined,
-        derivedMemory: { id: "derived-memory-1", context: fallbackContext, approved: true },
+        derivedMemory: undefined,
         activity: [...baseState.activity, {
           kind: "fallback",
           message: "The outcome was saved, but adaptation is temporarily unavailable."

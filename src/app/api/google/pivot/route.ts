@@ -12,6 +12,7 @@ export async function POST(request: Request): Promise<Response> {
     authenticateFirebaseRequest,
     runtime.repository,
     createGenkitGooglePivotGenerator(runtime.artifactStorage),
-    runtime.adaptation
+    runtime.adaptation,
+    { quota: runtime.quota, logger: runtime.logger }
   );
 }
