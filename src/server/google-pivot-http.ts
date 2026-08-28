@@ -4,6 +4,8 @@ import {
   type GooglePivotGenerator,
   type SituationMap
 } from "../app/google-pivot-protocol";
+import { MAX_GOOGLE_IMAGE_BYTES } from "../app/google-image-artifact";
+import type { GoogleImageArtifactInput } from "../app/google-image-artifact";
 import {
   runGoogleProtocolCommand,
   type GoogleProtocolRepository,
@@ -42,7 +44,7 @@ async function handleGooglePivotCommandPost(
 ): Promise<Response> {
   try {
     const identity = await authenticate(request);
-    const body = await readJson(request);
+    const body = await readBody(request);
     const input = parseInput(body, request, route);
     const result = await runGoogleProtocolCommand(
       {
@@ -157,6 +159,11 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
   switch (type) {
     case "start":
       return parseStartCommand(body);
+    case "add-image":
+      return { type, image: parseImageInput(body.image) };
+    case "approve-artifact-claim":
+      if (typeof body.itemId !== "string" || !body.itemId.trim()) throw new HttpInputError("An artifact claim identifier is required.");
+      return { type, itemId: body.itemId.trim() };
     case "answer-clarification":
       if (typeof body.questionId !== "string" || typeof body.answer !== "string") throw new HttpInputError("A clarification question and answer are required.");
       return { type, questionId: body.questionId.trim(), answer: body.answer };
@@ -199,7 +206,40 @@ function parseStartCommand(body: Record<string, unknown>): Extract<GooglePivotCo
     type: "start",
     quickDump: body.quickDump.trim(),
     consentGiven: body.consentGiven,
-    saveRequested: body.saveRequested ?? false
+    saveRequested: body.saveRequested ?? false,
+    ...(body.image === undefined ? {} : { image: parseImageInput(body.image) })
+  };
+}
+
+function parseImageInput(value: unknown): GoogleImageArtifactInput {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HttpInputError("An image upload is required.");
+  }
+  const image = value as Record<string, unknown>;
+  if (image.bytes instanceof Uint8Array) {
+    return {
+      bytes: image.bytes,
+      ...(typeof image.declaredMimeType === "string" ? { declaredMimeType: image.declaredMimeType } : {})
+    };
+  }
+
+  const base64 = image.base64 ?? image.data;
+  if (
+    typeof base64 !== "string" ||
+    !base64 ||
+    base64.length > Math.ceil(MAX_GOOGLE_IMAGE_BYTES * 4 / 3) + 4 ||
+    base64.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(base64)
+  ) {
+    throw new HttpInputError("The image upload is malformed.");
+  }
+  const bytes = Uint8Array.from(Buffer.from(base64, "base64"));
+  if (bytes.length === 0 || bytes.length > MAX_GOOGLE_IMAGE_BYTES) {
+    throw new HttpInputError("The image upload is empty or larger than the 10 MB limit.");
+  }
+  return {
+    bytes,
+    ...(typeof image.mimeType === "string" ? { declaredMimeType: image.mimeType } : {})
   };
 }
 
@@ -216,7 +256,29 @@ function isPivotOutcome(value: unknown): value is Extract<GooglePivotCommand, { 
     (outcome.pivotTimeSeconds === undefined || typeof outcome.pivotTimeSeconds === "number");
 }
 
-async function readJson(request: Request): Promise<unknown> {
+async function readBody(request: Request): Promise<unknown> {
+  if (request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data")) {
+    try {
+      const form = await request.formData();
+      const body: Record<string, unknown> = {};
+      for (const [key, value] of form.entries()) {
+        if (key === "image" && value instanceof File) {
+          body.image = {
+            bytes: new Uint8Array(await value.arrayBuffer()),
+            declaredMimeType: value.type || undefined
+          };
+        } else if (typeof value === "string") {
+          body[key] = value;
+        }
+      }
+      if (typeof body.consentGiven === "string") body.consentGiven = body.consentGiven === "true";
+      if (typeof body.saveRequested === "string") body.saveRequested = body.saveRequested === "true";
+      if (typeof body.expectedVersion === "string") body.expectedVersion = Number(body.expectedVersion);
+      return body;
+    } catch {
+      throw new HttpInputError("The image upload is malformed.");
+    }
+  }
   try {
     return await request.json();
   } catch {

@@ -1,5 +1,12 @@
 import { indicatesImmediateDanger } from "./safety-interruption";
+import {
+  processGoogleImageArtifact,
+  type GoogleImageArtifactExtractor,
+  type GoogleImageArtifactInput
+} from "./google-image-artifact";
 import { PIVOT_LIBRARY, type Pivot, type PivotKind } from "./pivot-protocol";
+
+export type { GoogleImageArtifactInput } from "./google-image-artifact";
 
 export type Provenance = "person" | "artifact" | "guide";
 
@@ -92,6 +99,11 @@ export type ActivityEvent = {
     | "pivot-selected"
     | "recommendation-regenerated"
     | "pivot-dismissed"
+    | "artifact-review"
+    | "artifact-safety-completed"
+    | "artifact-accepted"
+    | "artifact-rejected"
+    | "artifact-approved"
     | "outcome-recorded"
     | "generation"
     | "validation"
@@ -131,6 +143,14 @@ export type GooglePivotGenerator = {
     selectedPivot: Pivot;
     outcome: PivotOutcome;
   }) => Promise<string>;
+  extractImageClaims?: GoogleImageArtifactExtractor;
+};
+
+export type GoogleImageProcessingState = {
+  status: "not-provided" | "accepted" | "rejected";
+  mimeType?: string;
+  claimCount?: number;
+  message: string;
 };
 
 export type GooglePivotAdaptation = {
@@ -160,6 +180,7 @@ export type GooglePivotResult =
       kind: "safety-interruption";
       checkIn: { quickDump: string };
       activity: ActivityEvent[];
+      priorState?: Extract<GooglePivotResult, { kind: "pivot-protocol" }>;
     }
   | {
       kind: "pivot-protocol";
@@ -185,6 +206,8 @@ export type GooglePivotResult =
       adaptationStatus: "not-requested" | "personalized" | "no-match" | "unavailable";
       excludedMemoryIds: string[];
       guidancePreferenceIds: string[];
+      imageProcessing: GoogleImageProcessingState;
+      approvedArtifactClaimIds: string[];
       recommendation?: {
         primary: Pivot;
         alternatives: Pivot[];
@@ -216,7 +239,7 @@ export function googlePivotSafetyResult(
 }
 
 export async function runGooglePivotProtocol(
-  input: { quickDump: string; consentGiven: boolean; saveRequested?: boolean },
+  input: { quickDump: string; consentGiven: boolean; saveRequested?: boolean; image?: GoogleImageArtifactInput },
   generator: GooglePivotGenerator = defaultGenerator,
   adaptation?: GooglePivotAdaptation
 ): Promise<GooglePivotResult> {
@@ -232,11 +255,47 @@ export async function runGooglePivotProtocol(
     { kind: "safety-completed", message: "Safety gate completed." },
     { kind: "consent-verified", message: "Processing consent confirmed." }
   ];
-  const situationMap = createSituationMap(quickDump);
+  let situationMap = createSituationMap(quickDump);
   activity.push({ kind: "map-created", message: "Situation map created." });
+  let fallback = false;
+
+  const imageReview = await reviewImage(input.image, generator, quickDump);
+  if (imageReview.kind === "safety-interruption") {
+    return {
+      ...imageReview.result,
+      activity: [
+        ...activity,
+        { kind: "artifact-review", message: "The optional image was reviewed without retaining its bytes or filename." },
+        { kind: "artifact-safety-completed", message: "The extracted image content triggered the app-owned Safety interruption." },
+        { kind: "fallback", message: "Safety interruption returned app-owned urgent-support guidance." }
+      ]
+    };
+  }
+  let imageProcessing: GoogleImageProcessingState = { status: "not-provided", message: "No image was added." };
+  if (imageReview.kind === "rejected") {
+    fallback = true;
+    imageProcessing = { status: "rejected", message: imageReview.message };
+    activity.push(
+      { kind: "artifact-review", message: "The optional image was reviewed without retaining its bytes or filename." },
+      { kind: "artifact-rejected", message: imageReview.message },
+      { kind: "fallback", message: "The Quick dump remains sufficient to continue without the image." }
+    );
+  } else if (imageReview.kind === "accepted") {
+    situationMap = addImageClaims(situationMap, imageReview.claims);
+    imageProcessing = {
+      status: "accepted",
+      mimeType: imageReview.mimeType,
+      claimCount: imageReview.claims.length,
+      message: "The image was reviewed and its claims were added as artifact claims.",
+    };
+    activity.push(
+      { kind: "artifact-review", message: "The optional image was reviewed without retaining its bytes or filename." },
+      { kind: "artifact-safety-completed", message: "The extracted image content passed the second Safety gate." },
+      { kind: "artifact-accepted", message: "The image claims were added to the Situation map as artifact claims." }
+    );
+  }
 
   let output: GooglePivotGeneratorOutput;
-  let fallback = false;
   let generatedOutput: unknown;
   try {
     generatedOutput = await generator.generate({ quickDump, situationMap });
@@ -281,7 +340,7 @@ export async function runGooglePivotProtocol(
   let pendingDerivedContext: string | undefined;
   if (saveRequested || adaptation) {
     try {
-      const context = await (generator.prepareMemory?.({ situationMap }) ?? Promise.resolve(defaultPendingMemory(situationMap)));
+      const context = await (generator.prepareMemory?.({ situationMap: memorySafeSituationMap(situationMap) }) ?? Promise.resolve(defaultPendingMemory(situationMap)));
       validateDerivedMemoryContext(context);
       pendingDerivedContext = context;
     } catch {
@@ -330,13 +389,17 @@ export async function runGooglePivotProtocol(
     adaptationStatus: adapted.status,
     excludedMemoryIds: [],
     guidancePreferenceIds: adapted.preferenceIds,
+    imageProcessing,
+    approvedArtifactClaimIds: [],
     activity,
     fallback
   };
 }
 
 export type GooglePivotCommand =
-  | { type: "start"; quickDump: string; consentGiven: boolean; saveRequested?: boolean }
+  | { type: "start"; quickDump: string; consentGiven: boolean; saveRequested?: boolean; image?: GoogleImageArtifactInput }
+  | { type: "add-image"; image: GoogleImageArtifactInput }
+  | { type: "approve-artifact-claim"; itemId: string }
   | { type: "answer-clarification"; questionId: string; answer: string }
   | { type: "skip-clarification"; questionId: string }
   | {
@@ -383,6 +446,28 @@ export async function runGooglePivotCommand(
 
   if (command.type === "answer-clarification" || command.type === "skip-clarification") {
     return answerClarification(current, command, generator, adaptation);
+  }
+
+  if (command.type === "add-image") {
+    if (current.imageProcessing?.status === "accepted") {
+      return { kind: "invalid-command", message: "Only one image can be added to a Situation." };
+    }
+    return addImageToProtocol(current, command.image, generator, adaptation);
+  }
+
+  if (command.type === "approve-artifact-claim") {
+    if (!isSituationMapEditable(current.phase)) return mapEditPhaseError();
+    const item = current.situationMap.artifactClaims.find((candidate) => candidate.id === command.itemId);
+    if (!item) return { kind: "invalid-command", message: "That artifact claim no longer exists." };
+    if ((current.approvedArtifactClaimIds ?? []).includes(command.itemId)) return { kind: "ok", state: current };
+    return {
+      kind: "ok",
+      state: {
+        ...current,
+        approvedArtifactClaimIds: [...(current.approvedArtifactClaimIds ?? []), command.itemId],
+        activity: [...current.activity, { kind: "artifact-approved", message: "The person approved an artifact claim for possible retention." }]
+      }
+    };
   }
 
   if (command.type === "correct-map") {
@@ -555,7 +640,9 @@ async function recordOutcome(
     ...current,
     phase: "outcome" as const,
     outcome,
-    situationMap,
+    situationMap: current.saveRequested
+      ? removeUnapprovedArtifactClaims(situationMap, current.approvedArtifactClaimIds ?? [])
+      : situationMap,
     persistence: current.saveRequested ? "saved" as const : "unsaved" as const,
     enrichment: "not-requested" as const,
     derivedMemory: undefined,
@@ -603,6 +690,80 @@ async function recordOutcome(
       }
     };
   }
+}
+
+async function addImageToProtocol(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  image: GoogleImageArtifactInput,
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
+): Promise<GooglePivotCommandResult> {
+  if (!isSituationMapEditable(current.phase)) return mapEditPhaseError();
+
+  const review = await reviewImage(image, generator, current.checkIn.quickDump);
+  if (review.kind === "safety-interruption") {
+    return { kind: "safety-interruption", result: { ...review.result, priorState: current } };
+  }
+  if (review.kind === "rejected") {
+    return {
+      kind: "ok",
+      state: {
+        ...current,
+        imageProcessing: { status: "rejected", message: review.message },
+        fallback: true,
+        activity: [
+          ...current.activity,
+          { kind: "artifact-review", message: "The optional image was reviewed without retaining its bytes or filename." },
+          { kind: "artifact-rejected", message: review.message },
+          { kind: "fallback", message: "The prior valid Situation map remains available without the image." }
+        ]
+      }
+    };
+  }
+  if (review.kind === "none") {
+    return { kind: "invalid-command", message: "An image is required." };
+  }
+
+  const situationMap = addImageClaims(current.situationMap, review.claims);
+  const generation = await generateAdaptedOutput(
+    current.checkIn.quickDump,
+    situationMap,
+    generator,
+    current.clarification?.answers,
+    adaptationForState(adaptation, current),
+    current.retrievalAttempted ? current.retrievedMemories : undefined
+  );
+  return {
+    kind: "ok",
+    state: {
+      ...current,
+      phase: "recommended",
+      selectedPivot: undefined,
+      outcome: undefined,
+      situationMap: preserveAcceptedMapItems(generation.output.situationMap, situationMap, current.revisions),
+      recommendation: recommendationFromOutput(generation.output),
+      imageProcessing: {
+        status: "accepted",
+        mimeType: review.mimeType,
+        claimCount: review.claims.length,
+        message: "The image was reviewed and its claims were added as artifact claims."
+      },
+      memoryExplanations: generation.explanations,
+      retrievedMemories: generation.memories,
+      retrievalAttempted: generation.retrievalAttempted,
+      adaptationStatus: generation.status,
+      guidancePreferenceIds: generation.preferenceIds,
+      fallback: current.fallback || generation.fallback,
+      activity: [
+        ...current.activity,
+        { kind: "artifact-review", message: "The optional image was reviewed without retaining its bytes or filename." },
+        { kind: "artifact-safety-completed", message: "The extracted image content passed the second Safety gate." },
+        { kind: "artifact-accepted", message: "The image claims were added to the Situation map as artifact claims." },
+        { kind: "generation", message: "The recommendation was updated from accepted artifact claims." },
+        ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted Situation map." }] : [])
+      ]
+    }
+  };
 }
 
 async function answerClarification(
@@ -833,7 +994,7 @@ async function generateAdaptedOutput(
   let currentDerivedContext: string;
   try {
     currentDerivedContext = validateDerivedMemoryContext(
-      await (generator.prepareMemory?.({ situationMap }) ?? Promise.resolve(defaultPendingMemory(situationMap)))
+      await (generator.prepareMemory?.({ situationMap: memorySafeSituationMap(situationMap) }) ?? Promise.resolve(defaultPendingMemory(situationMap)))
     );
   } catch {
     return {
@@ -1063,6 +1224,64 @@ function createSituationMap(quickDump: string): SituationMap {
     progress: [createSituationMapItem("progress-1", "Make one part of this situation clearer or more doable.", "person")],
     pivotHistory: [],
     priorPatterns: []
+  };
+}
+
+async function reviewImage(
+  image: GoogleImageArtifactInput | undefined,
+  generator: GooglePivotGenerator,
+  quickDump: string
+): Promise<
+  | { kind: "none" }
+  | { kind: "accepted"; mimeType: string; claims: string[] }
+  | { kind: "rejected"; message: string }
+  | { kind: "safety-interruption"; result: Extract<GooglePivotResult, { kind: "safety-interruption" }> }
+> {
+  if (!image) return { kind: "none" };
+  const processed = await processGoogleImageArtifact(
+    image,
+    generator.extractImageClaims ?? (async () => {
+      throw new Error("Image extraction is unavailable.");
+    })
+  );
+  if (processed.kind === "rejected") return processed;
+  if (indicatesImmediateDanger(processed.claims.join("\n"))) {
+    return {
+      kind: "safety-interruption",
+      result: {
+        kind: "safety-interruption",
+        checkIn: { quickDump },
+        activity: [
+          { kind: "safety-completed", message: "Safety gate completed; normal Pivot processing was interrupted." },
+          { kind: "fallback", message: "Safety interruption returned app-owned urgent-support guidance." }
+        ]
+      }
+    };
+  }
+  return { kind: "accepted", mimeType: processed.mimeType, claims: processed.claims };
+}
+
+function addImageClaims(situationMap: SituationMap, claims: readonly string[]): SituationMap {
+  const nextId = situationMap.artifactClaims.length + 1;
+  const additions = claims.map((text, index) => ({
+    id: `artifact-image-${nextId + index}`,
+    text,
+    provenance: "artifact" as const
+  }));
+  return {
+    ...situationMap,
+    artifactClaims: [...situationMap.artifactClaims, ...additions]
+  };
+}
+
+function memorySafeSituationMap(situationMap: SituationMap): SituationMap {
+  return { ...situationMap, artifactClaims: [] };
+}
+
+function removeUnapprovedArtifactClaims(situationMap: SituationMap, approvedIds: readonly string[]): SituationMap {
+  return {
+    ...situationMap,
+    artifactClaims: situationMap.artifactClaims.filter((item) => approvedIds.includes(item.id))
   };
 }
 

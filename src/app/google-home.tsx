@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import { getFirebaseGoogleAuthClient } from "../lib/firebase-google-auth";
+import { googleImageBytesToBase64 } from "./google-image-artifact";
 import type { GooglePivotResult, SituationMap } from "./google-pivot-protocol";
 
 type Person = {
@@ -168,6 +169,7 @@ function GooglePivotWorkspace({
   const [quickDump, setQuickDump] = useState("");
   const [consentGiven, setConsentGiven] = useState(false);
   const [saveRequested, setSaveRequested] = useState(false);
+  const [imageFile, setImageFile] = useState<File>();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const startIdempotencyKey = useRef<string | undefined>(undefined);
@@ -187,7 +189,8 @@ function GooglePivotWorkspace({
           type: "start",
           quickDump,
           consentGiven,
-          saveRequested
+          saveRequested,
+          ...(imageFile ? { image: await imagePayload(imageFile) } : {})
         })
       });
       onResult(next);
@@ -219,6 +222,14 @@ function GooglePivotWorkspace({
             rows={5}
             placeholder="I keep circling around…"
           />
+          <label htmlFor="google-image">Optional image</label>
+          <input
+            id="google-image"
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={(event) => setImageFile(event.target.files?.[0])}
+          />
+          <p className="privacy-note">Only add an image if it helps. It is reviewed inline and not retained as a file.</p>
           <label className="choice-control">
             <input
               type="checkbox"
@@ -268,8 +279,23 @@ function GoogleSafetyResult({ result }: { result: Extract<GooglePivotResult, { k
         department, or contact someone you trust and ask them to stay with you.
       </p>
       <p className="privacy-note">This Quick dump was not saved or sent for normal generation.</p>
+      {result.priorState ? <PriorSituationMap state={result.priorState} /> : null}
       <ActivityTrace events={result.activity} />
     </section>
+  );
+}
+
+function PriorSituationMap({ state }: { state: Extract<GooglePivotResult, { kind: "pivot-protocol" }> }) {
+  return (
+    <details className="situation-map" open>
+      <summary><p className="eyebrow">Prior Situation map preserved</p></summary>
+      {Object.entries(state.situationMap).map(([section, items]) => (
+        <section className="situation-map__section" key={section}>
+          <h3>{section}</h3>
+          {items.length === 0 ? <p className="privacy-note">Nothing identified yet.</p> : items.map((item) => <p key={item.id}><strong>{item.provenance}:</strong> {item.text}</p>)}
+        </section>
+      ))}
+    </details>
   );
 }
 
@@ -378,6 +404,7 @@ function GooglePivotResultView({
           ))}
         </section>
       ) : null}
+      {mapEditable && result.imageProcessing?.status !== "accepted" ? <OptionalImageUpload onAdd={(image) => void command({ type: "add-image", image })} /> : null}
       {result.phase !== "clarifying" && result.phase !== "dismissed" && recommendation ? (
         <section className="pivot-card" aria-labelledby="google-pivot-heading">
           <p className="eyebrow">{result.phase === "outcome" ? "Pivot outcome" : "Recommended Pivot"}</p>
@@ -419,7 +446,7 @@ function GooglePivotResultView({
           <h2 id="situation-map-heading">What we have so far</h2>
         </summary>
         <SituationMapSection editable={mapEditable} section="shared" title="You shared" items={situationMap.shared} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection editable={mapEditable} section="artifactClaims" title="Artifact claims" items={situationMap.artifactClaims} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="artifactClaims" title="Artifact claims" items={situationMap.artifactClaims} approvedItemIds={result.approvedArtifactClaimIds} onChange={updateMapItem} onSave={saveMapItem} onApprove={(itemId) => void command({ type: "approve-artifact-claim", itemId })} savingItem={savingItem} />
         <SituationMapSection editable={mapEditable} section="interpretations" title="Guide interpretation" items={situationMap.interpretations} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
         <SituationMapSection editable={mapEditable} section="uncertainties" title="Uncertainties" items={situationMap.uncertainties} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
         <SituationMapSection editable={mapEditable} section="contradictions" title="Contradictions to resolve" items={situationMap.contradictions} onChange={updateMapItem} onSave={saveMapItem} onResolve={(itemId) => void command({ type: "resolve-contradiction", itemId })} savingItem={savingItem} />
@@ -586,6 +613,8 @@ function SituationMapSection({
   onChange,
   onSave,
   onResolve,
+  onApprove,
+  approvedItemIds,
   savingItem
 }: {
   editable: boolean;
@@ -595,6 +624,8 @@ function SituationMapSection({
   onChange: (section: keyof SituationMap, id: string, text: string) => void;
   onSave: (section: keyof SituationMap, id: string) => Promise<void>;
   onResolve?: (id: string) => void;
+  onApprove?: (id: string) => void;
+  approvedItemIds?: readonly string[];
   savingItem: string | undefined;
 }) {
   return (
@@ -608,6 +639,9 @@ function SituationMapSection({
           {editable ? <button className="text-button" disabled={savingItem === item.id} onClick={() => void onSave(section, item.id)} type="button">
             {savingItem === item.id ? "Saving…" : "Save correction"}
           </button> : null}
+          {section === "artifactClaims" && editable && onApprove && !approvedItemIds?.includes(item.id) ? (
+            <button className="text-button" onClick={() => onApprove(item.id)} type="button">Approve for saved map</button>
+          ) : null}
           {editable && onResolve ? <button className="text-button" onClick={() => onResolve(item.id)} type="button">Resolve contradiction</button> : null}
         </div>
       ))}
@@ -625,6 +659,38 @@ function ActivityTrace({ events }: { events: { kind: string; message: string }[]
       {events.map((event, index) => <p key={`${event.kind}-${index}`}>{event.message}</p>)}
     </details>
   );
+}
+
+function OptionalImageUpload({ onAdd }: { onAdd: (image: { base64: string; mimeType: string }) => void }) {
+  const [file, setFile] = useState<File>();
+  const [working, setWorking] = useState(false);
+
+  async function addImage() {
+    if (!file) return;
+    setWorking(true);
+    try {
+      onAdd(await imagePayload(file));
+      setFile(undefined);
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <section className="history-card" aria-labelledby="optional-image-heading">
+      <p className="eyebrow">Optional supporting artifact</p>
+      <h2 id="optional-image-heading">Add one image if useful</h2>
+      <p className="privacy-note">The Quick dump is enough. A JPEG, PNG, or WebP is reviewed inline and its bytes are not retained.</p>
+      <label htmlFor="later-google-image">Optional image</label>
+      <input id="later-google-image" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setFile(event.target.files?.[0])} />
+      <button className="quiet-button" disabled={!file || working} onClick={() => void addImage()} type="button">{working ? "Reviewing…" : "Review image"}</button>
+    </section>
+  );
+}
+
+async function imagePayload(file: File): Promise<{ base64: string; mimeType: string }> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return { base64: googleImageBytesToBase64(bytes), mimeType: file.type };
 }
 
 async function loadWorkspace(person: Person): Promise<Protocol> {

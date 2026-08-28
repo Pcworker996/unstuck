@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   runGooglePivotCommand,
   type GooglePivotCommand,
@@ -366,7 +367,20 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
 }
 
 function commandFingerprint(command: GooglePivotCommand): string {
+  if (command.type === "start" && command.image) {
+    return JSON.stringify({ ...command, image: imageFingerprint(command.image.bytes, command.image.declaredMimeType) });
+  }
+  if (command.type === "add-image") {
+    return JSON.stringify({ ...command, image: imageFingerprint(command.image.bytes, command.image.declaredMimeType) });
+  }
   return JSON.stringify(command);
+}
+
+function imageFingerprint(bytes: Uint8Array, declaredMimeType?: string): { sha256: string; declaredMimeType?: string } {
+  return {
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    ...(declaredMimeType ? { declaredMimeType } : {})
+  };
 }
 
 function visibleProtocol(protocol: StoredGoogleProtocol): GoogleProtocol {
@@ -374,7 +388,9 @@ function visibleProtocol(protocol: StoredGoogleProtocol): GoogleProtocol {
     id: protocol.id,
     version: protocol.version,
     createdAt: protocol.createdAt,
-    pivotState: protocol.pivotState
+    pivotState: protocol.pivotState && isPivotState(protocol.pivotState)
+      ? normalizePivotState(protocol.pivotState)
+      : protocol.pivotState
   };
 }
 
@@ -400,6 +416,8 @@ function normalizePivotState(
     retrievalAttempted: state.retrievalAttempted ?? false,
     adaptationStatus: state.adaptationStatus ?? "not-requested",
     excludedMemoryIds: state.excludedMemoryIds ?? [],
-    guidancePreferenceIds: state.guidancePreferenceIds ?? []
+    guidancePreferenceIds: state.guidancePreferenceIds ?? [],
+    approvedArtifactClaimIds: state.approvedArtifactClaimIds ?? [],
+    imageProcessing: state.imageProcessing ?? { status: "not-provided", message: "No image was added." }
   };
 }

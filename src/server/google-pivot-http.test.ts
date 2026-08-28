@@ -30,6 +30,94 @@ describe("Google Pivot HTTP interface", () => {
     await expect(response.json()).resolves.toMatchObject({ kind: "pivot-protocol" });
   });
 
+  it("accepts an optional image in JSON without accepting a client filename", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          expectedVersion: 0,
+          idempotencyKey: "image-start",
+          quickDump: "I am stuck on moving paperwork.",
+          consentGiven: true,
+          image: {
+            base64: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 2, 0xff, 0xd9]).toString("base64"),
+            mimeType: "image/jpeg",
+            filename: "private-landlord-message.jpg"
+          }
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository,
+      {
+        async generate({ situationMap }) {
+          return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+        },
+        async extractImageClaims() {
+          return { claims: [{ text: "The message asks for a response." }] };
+        }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.situationMap.artifactClaims).toEqual([
+      { id: "artifact-image-1", text: "The message asks for a response.", provenance: "artifact" }
+    ]);
+    expect(JSON.stringify(body)).not.toContain("private-landlord-message.jpg");
+  });
+
+  it("handles a multipart image upload and gives explicit malformed feedback", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+    const form = new FormData();
+    form.set("protocolId", "protocol-1");
+    form.set("expectedVersion", "0");
+    form.set("idempotencyKey", "multipart-image");
+    form.set("quickDump", "I am stuck on moving paperwork.");
+    form.set("consentGiven", "true");
+    form.set("image", new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0, 0, 0, 0, 0])], "ignored.png", { type: "image/png" }));
+
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", { method: "POST", body: form }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository,
+      {
+        async generate({ situationMap }) {
+          return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+        },
+        async extractImageClaims() { return { claims: [] }; }
+      }
+    );
+    expect(response.status).toBe(200);
+
+    const malformed = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          expectedVersion: 0,
+          idempotencyKey: "bad-image",
+          quickDump: "I am stuck.",
+          consentGiven: true,
+          image: { base64: "not base64" }
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository
+    );
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({ kind: "invalid-request", message: "The image upload is malformed." });
+  });
+
   it("does not allow an unauthenticated Quick dump", async () => {
     const response = await handleGooglePivotPost(
       new Request("http://localhost/api/google/pivot", { method: "POST" }),
