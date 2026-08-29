@@ -6,6 +6,7 @@ tsconfig.tsbuildinfo
 !.env.example
 .firebase/
 coverage/
+evaluation-results/
 *.pem
 *.key
 *service-account*.json

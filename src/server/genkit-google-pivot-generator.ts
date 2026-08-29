@@ -41,7 +41,18 @@ const imageClaimsSchema = z.object({
   claims: z.array(z.object({ text: z.string().min(1).max(500) })).max(8)
 });
 
-export function createGenkitGooglePivotGenerator(temporaryPdfStorage?: GooglePdfTemporaryStorage): GooglePivotGenerator {
+export type GoogleModelUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+};
+
+export type GoogleModelUsageObserver = (usage: GoogleModelUsage) => void;
+
+export function createGenkitGooglePivotGenerator(
+  temporaryPdfStorage?: GooglePdfTemporaryStorage,
+  usageObserver?: GoogleModelUsageObserver
+): GooglePivotGenerator {
   const ai = createGoogleGenkit();
   const model = vertexAI.model(process.env.VERTEX_GEMINI_MODEL_ID?.trim() || "gemini-3.5-flash");
 
@@ -52,6 +63,7 @@ export function createGenkitGooglePivotGenerator(temporaryPdfStorage?: GooglePdf
         prompt: promptFor({ quickDump, situationMap, clarificationAnswers }),
         output: { schema: pivotOutputSchema }
       });
+      reportUsage(usageObserver, response.usage);
       if (!response.output) {
         throw new Error("Gemini returned no structured Pivot output.");
       }
@@ -63,6 +75,7 @@ export function createGenkitGooglePivotGenerator(temporaryPdfStorage?: GooglePdf
         prompt: adaptationPromptFor({ situationMap, currentDerivedContext, retrievedMemories, guidancePreferences }),
         output: { schema: pivotOutputSchema }
       });
+      reportUsage(usageObserver, response.usage);
       if (!response.output) {
         throw new Error("Gemini returned no adapted Pivot output.");
       }
@@ -74,6 +87,7 @@ export function createGenkitGooglePivotGenerator(temporaryPdfStorage?: GooglePdf
         prompt: `${promptFor({ quickDump, situationMap, clarificationAnswers })}\nRepair this invalid candidate and return only the requested structure:\n${JSON.stringify(invalidOutput)}`,
         output: { schema: pivotOutputSchema }
       });
+      reportUsage(usageObserver, response.usage);
       if (!response.output) {
         throw new Error("Gemini repair returned no structured Pivot output.");
       }
@@ -85,6 +99,7 @@ export function createGenkitGooglePivotGenerator(temporaryPdfStorage?: GooglePdf
         prompt: memoryPreparationPromptFor(situationMap),
         output: { schema: z.string().max(500) }
       });
+      reportUsage(usageObserver, response.usage);
       if (!response.output) {
         throw new Error("Gemini returned no pending Derived-memory context.");
       }
@@ -96,6 +111,7 @@ export function createGenkitGooglePivotGenerator(temporaryPdfStorage?: GooglePdf
         prompt: memoryPromptFor({ currentContext, selectedPivot, outcome }),
         output: { schema: z.string().max(500) }
       });
+      reportUsage(usageObserver, response.usage);
       if (!response.output) {
         throw new Error("Gemini returned no Derived-memory context.");
       }
@@ -119,6 +135,7 @@ export function createGenkitGooglePivotGenerator(temporaryPdfStorage?: GooglePdf
         toolChoice: "none",
         output: { schema: imageClaimsSchema }
       });
+      reportUsage(usageObserver, response.usage);
       if (!response.output) {
         throw new Error("Gemini returned no structured image claims.");
       }
@@ -144,11 +161,21 @@ export function createGenkitGooglePivotGenerator(temporaryPdfStorage?: GooglePdf
         toolChoice: "none",
         output: { schema: imageClaimsSchema }
       });
+      reportUsage(usageObserver, response.usage);
       if (!response.output) throw new Error("Gemini returned no structured artifact claims.");
       return response.output;
     },
     temporaryPdfStorage
   };
+}
+
+function reportUsage(observer: GoogleModelUsageObserver | undefined, usage: GoogleModelUsage | undefined): void {
+  if (!observer || !usage) return;
+  observer({
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens
+  });
 }
 
 export function createGenkitGoogleEmbeddingProvider(): (text: string) => Promise<readonly number[]> {
