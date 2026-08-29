@@ -78,7 +78,7 @@ function liveInvariants(result: Awaited<ReturnType<typeof runGooglePivotProtocol
   }
   const pivots = result.recommendation ? [result.recommendation.primary, ...result.recommendation.alternatives] : [];
   return {
-    schemaValid: true,
+    schemaValid: !result.fallback,
     recommendationIsBounded: pivots.length === 3 && new Set(pivots.map((pivot) => pivot.kind)).size === 3 && pivots.every((pivot) => PIVOT_LIBRARY.some((candidate) => candidate.kind === pivot.kind)),
     provenanceIsSeparated: result.situationMap.shared.every((item) => item.provenance === "person") && result.situationMap.artifactClaims.every((item) => item.provenance === "artifact"),
     safetyGateIsFirst: result.activity[0]?.kind === "safety-completed"
