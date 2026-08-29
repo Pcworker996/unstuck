@@ -84,9 +84,7 @@ export function GoogleHome() {
     if (!person || !protocol) return;
     try {
       await deleteGoogleHistory(protocol.id);
-      setProtocol(await createProtocolForPerson(person));
-      setPivotResult(undefined);
-      setMessage("The incomplete Check-in was discarded.");
+      await replaceWithNewProtocol("The incomplete Check-in was discarded.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The incomplete Check-in could not be discarded.");
     }
@@ -96,14 +94,19 @@ export function GoogleHome() {
     if (!person || startingNewCheckIn) return;
     setStartingNewCheckIn(true);
     try {
-      setProtocol(await createProtocolForPerson(person));
-      setPivotResult(undefined);
-      setMessage("A new Check-in is ready.");
+      await replaceWithNewProtocol("A new Check-in is ready.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "A new Check-in could not be started.");
     } finally {
       setStartingNewCheckIn(false);
     }
+  }
+
+  async function replaceWithNewProtocol(statusMessage: string) {
+    if (!person) return;
+    setProtocol(await createProtocolForPerson(person));
+    setPivotResult(undefined);
+    setMessage(statusMessage);
   }
 
   if (loading && !person) {
@@ -753,12 +756,7 @@ async function loadWorkspace(person: Person): Promise<Protocol> {
     return existing.protocol;
   }
 
-  const created = await googleApiRequest<{ kind: "protocol"; protocol: Protocol }>(
-    "/api/google/protocol",
-    { method: "POST" }
-  );
-  window.sessionStorage.setItem(storageKey, created.protocol.id);
-  return created.protocol;
+  return createProtocolForPerson(person);
 }
 
 async function createProtocolForPerson(person: Person): Promise<Protocol> {

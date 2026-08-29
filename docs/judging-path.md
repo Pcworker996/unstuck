@@ -99,7 +99,7 @@ SERVICE=unstuck
 
 gcloud run services describe "$SERVICE" \
   --region "$REGION" \
-  --format=json | jq '{urls:(.metadata.annotations["run.googleapis.com/urls"]|fromjson),revision:.status.latestReadyRevisionName,image:.spec.template.spec.containers[0].image,maxScale:.metadata.annotations["run.googleapis.com/maxScale"],minScale:.metadata.annotations["run.googleapis.com/minScale"],serviceAccount:.spec.template.spec.serviceAccountName,quotas:(.spec.template.spec.containers[0].env|map(select(.name|startswith("GOOGLE_DAILY"))|{key:.name,value:.value})|from_entries)}'
+  --format=json | jq '{urls:(.metadata.annotations["run.googleapis.com/urls"]|fromjson),revision:.status.latestReadyRevisionName,image:.spec.template.spec.containers[0].image,serviceMaxScale:.metadata.annotations["run.googleapis.com/maxScale"],serviceMinScale:(.metadata.annotations["run.googleapis.com/minScale"] // "0 (default)"),revisionMaxScale:(.spec.template.metadata.annotations["autoscaling.knative.dev/maxScale"] // "service-level"),serviceAccount:.spec.template.spec.serviceAccountName,quotas:(.spec.template.spec.containers[0].env|map(select(.name|startswith("GOOGLE_DAILY"))|{key:.name,value:.value})|from_entries)}'
 
 gcloud logging read \
   'resource.type="cloud_run_revision" AND resource.labels.service_name="unstuck"' \
