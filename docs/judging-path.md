@@ -5,7 +5,9 @@ leads the person through a messy situation, asks at most two bounded questions,
 captures corrections in a Situation map, and adapts a later recommendation
 from an approved outcome.
 
-Hosted project: <https://unstuck-d3zyiibvca-uc.a.run.app>
+Hosted project: <https://unstuck-531032315009.us-central1.run.app>
+
+Last verified deployment: Cloud Run revision `unstuck-00004-6rz` on 2026-08-29.
 
 Use an approved Google test identity and synthetic data only. Never paste a
 real address, lease, contact detail, health detail, financial account, secret,
@@ -97,7 +99,7 @@ SERVICE=unstuck
 
 gcloud run services describe "$SERVICE" \
   --region "$REGION" \
-  --format='yaml(status.url,status.latestReadyRevisionName,spec.template.metadata.annotations,spec.template.spec.serviceAccountName)'
+  --format=json | jq '{urls:(.metadata.annotations["run.googleapis.com/urls"]|fromjson),revision:.status.latestReadyRevisionName,maxScale:.metadata.annotations["run.googleapis.com/maxScale"],minScale:.metadata.annotations["run.googleapis.com/minScale"],serviceAccount:.spec.template.spec.serviceAccountName}'
 
 gcloud logging read \
   'resource.type="cloud_run_revision" AND resource.labels.service_name="unstuck"' \
@@ -109,7 +111,7 @@ gcloud firestore databases list \
 
 gcloud storage buckets describe \
   "gs://unstuck-temporary-pdfs-$PROJECT_ID" \
-  --format='yaml(name,location,iamConfiguration, lifecycle)'
+  --format=json | jq '{name,location,publicAccessPrevention:.public_access_prevention,uniformBucketLevelAccess:.uniform_bucket_level_access,lifecycle:.lifecycle_config}'
 ```
 
 Cloud Logging entries should contain only the bounded correlation ID,
@@ -162,7 +164,7 @@ the application quotas remain the hard request bound.
 | Requirement | Value/evidence |
 | --- | --- |
 | Category | Collaborative Partner |
-| Hosted project | <https://unstuck-d3zyiibvca-uc.a.run.app> |
+| Hosted project | <https://unstuck-531032315009.us-central1.run.app> |
 | Repository | <https://github.com/Pcworker996/unstuck> |
 | Description | This document's opening and the flagship run above |
 | Setup/evaluation | `docs/google-cloud-setup-and-deployment.md`, `docs/synthetic-evaluation.md`, and this document |
