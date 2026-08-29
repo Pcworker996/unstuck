@@ -26,6 +26,7 @@ export function GoogleHome() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string>();
   const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [startingNewCheckIn, setStartingNewCheckIn] = useState(false);
 
   useEffect(() => {
     getFirebaseGoogleAuthClient()
@@ -83,12 +84,7 @@ export function GoogleHome() {
     if (!person || !protocol) return;
     try {
       await deleteGoogleHistory(protocol.id);
-      const created = await googleApiRequest<{ kind: "protocol"; protocol: Protocol }>(
-        "/api/google/protocol",
-        { method: "POST" }
-      );
-      window.sessionStorage.setItem(`unstuck.google.protocol.${person.id}`, created.protocol.id);
-      setProtocol(created.protocol);
+      setProtocol(await createProtocolForPerson(person));
       setPivotResult(undefined);
       setMessage("The incomplete Check-in was discarded.");
     } catch (error) {
@@ -97,18 +93,16 @@ export function GoogleHome() {
   }
 
   async function startNewCheckIn() {
-    if (!person) return;
+    if (!person || startingNewCheckIn) return;
+    setStartingNewCheckIn(true);
     try {
-      const created = await googleApiRequest<{ kind: "protocol"; protocol: Protocol }>(
-        "/api/google/protocol",
-        { method: "POST" }
-      );
-      window.sessionStorage.setItem(`unstuck.google.protocol.${person.id}`, created.protocol.id);
-      setProtocol(created.protocol);
+      setProtocol(await createProtocolForPerson(person));
       setPivotResult(undefined);
       setMessage("A new Check-in is ready.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "A new Check-in could not be started.");
+    } finally {
+      setStartingNewCheckIn(false);
     }
   }
 
@@ -157,6 +151,7 @@ export function GoogleHome() {
           result={pivotResult}
           onDiscard={discardProtocol}
           onNewCheckIn={startNewCheckIn}
+          startingNewCheckIn={startingNewCheckIn}
           onResult={(next) => {
             setPivotResult(next);
             if (next.kind === "pivot-protocol" && next.persistence === "saved") {
@@ -177,7 +172,8 @@ function GooglePivotWorkspace({
   result,
   onResult,
   onDiscard,
-  onNewCheckIn
+  onNewCheckIn,
+  startingNewCheckIn
 }: {
   protocolId: string;
   protocolVersion: number;
@@ -185,6 +181,7 @@ function GooglePivotWorkspace({
   onResult: (result: GooglePivotResult) => void;
   onDiscard: () => Promise<void>;
   onNewCheckIn: () => Promise<void>;
+  startingNewCheckIn: boolean;
 }) {
   const [quickDump, setQuickDump] = useState("");
   const [consentGiven, setConsentGiven] = useState(false);
@@ -284,7 +281,7 @@ function GooglePivotWorkspace({
       ) : null}
       {result?.kind === "safety-interruption" ? <GoogleSafetyResult result={result} /> : null}
       {result?.kind === "pivot-protocol" ? (
-        <GooglePivotResultView protocolId={protocolId} result={result} onResult={onResult} onDiscard={onDiscard} onNewCheckIn={onNewCheckIn} />
+        <GooglePivotResultView protocolId={protocolId} result={result} onResult={onResult} onDiscard={onDiscard} onNewCheckIn={onNewCheckIn} startingNewCheckIn={startingNewCheckIn} />
       ) : null}
     </section>
   );
@@ -325,13 +322,15 @@ function GooglePivotResultView({
   result,
   onResult,
   onDiscard,
-  onNewCheckIn
+  onNewCheckIn,
+  startingNewCheckIn
 }: {
   protocolId: string;
   result: Extract<GooglePivotResult, { kind: "pivot-protocol" }>;
   onResult: (result: GooglePivotResult) => void;
   onDiscard: () => Promise<void>;
   onNewCheckIn: () => Promise<void>;
+  startingNewCheckIn: boolean;
 }) {
   const [situationMap, setSituationMap] = useState(result.situationMap);
   const [error, setError] = useState<string>();
@@ -472,7 +471,9 @@ function GooglePivotResultView({
             </section>
           ) : null}
           {result.phase === "outcome" ? (
-            <button className="quiet-button" onClick={() => void onNewCheckIn()} type="button">Start a new Check-in</button>
+            <button className="quiet-button" disabled={startingNewCheckIn} onClick={() => void onNewCheckIn()} type="button">
+              {startingNewCheckIn ? "Starting…" : "Start a new Check-in"}
+            </button>
           ) : null}
         </section>
       ) : null}
@@ -757,6 +758,15 @@ async function loadWorkspace(person: Person): Promise<Protocol> {
     { method: "POST" }
   );
   window.sessionStorage.setItem(storageKey, created.protocol.id);
+  return created.protocol;
+}
+
+async function createProtocolForPerson(person: Person): Promise<Protocol> {
+  const created = await googleApiRequest<{ kind: "protocol"; protocol: Protocol }>(
+    "/api/google/protocol",
+    { method: "POST" }
+  );
+  window.sessionStorage.setItem(`unstuck.google.protocol.${person.id}`, created.protocol.id);
   return created.protocol;
 }
 
