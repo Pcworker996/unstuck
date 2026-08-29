@@ -96,6 +96,22 @@ export function GoogleHome() {
     }
   }
 
+  async function startNewCheckIn() {
+    if (!person) return;
+    try {
+      const created = await googleApiRequest<{ kind: "protocol"; protocol: Protocol }>(
+        "/api/google/protocol",
+        { method: "POST" }
+      );
+      window.sessionStorage.setItem(`unstuck.google.protocol.${person.id}`, created.protocol.id);
+      setProtocol(created.protocol);
+      setPivotResult(undefined);
+      setMessage("A new Check-in is ready.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "A new Check-in could not be started.");
+    }
+  }
+
   if (loading && !person) {
     return <main className="loading-screen">Loading your private workspace…</main>;
   }
@@ -135,10 +151,12 @@ export function GoogleHome() {
       </section>
       {protocol ? (
         <GooglePivotWorkspace
+          key={protocol.id}
           protocolId={protocol.id}
           protocolVersion={protocol.version}
           result={pivotResult}
           onDiscard={discardProtocol}
+          onNewCheckIn={startNewCheckIn}
           onResult={(next) => {
             setPivotResult(next);
             if (next.kind === "pivot-protocol" && next.persistence === "saved") {
@@ -158,13 +176,15 @@ function GooglePivotWorkspace({
   protocolVersion,
   result,
   onResult,
-  onDiscard
+  onDiscard,
+  onNewCheckIn
 }: {
   protocolId: string;
   protocolVersion: number;
   result: GooglePivotResult | undefined;
   onResult: (result: GooglePivotResult) => void;
   onDiscard: () => Promise<void>;
+  onNewCheckIn: () => Promise<void>;
 }) {
   const [quickDump, setQuickDump] = useState("");
   const [consentGiven, setConsentGiven] = useState(false);
@@ -264,7 +284,7 @@ function GooglePivotWorkspace({
       ) : null}
       {result?.kind === "safety-interruption" ? <GoogleSafetyResult result={result} /> : null}
       {result?.kind === "pivot-protocol" ? (
-        <GooglePivotResultView protocolId={protocolId} result={result} onResult={onResult} onDiscard={onDiscard} />
+        <GooglePivotResultView protocolId={protocolId} result={result} onResult={onResult} onDiscard={onDiscard} onNewCheckIn={onNewCheckIn} />
       ) : null}
     </section>
   );
@@ -304,12 +324,14 @@ function GooglePivotResultView({
   protocolId,
   result,
   onResult,
-  onDiscard
+  onDiscard,
+  onNewCheckIn
 }: {
   protocolId: string;
   result: Extract<GooglePivotResult, { kind: "pivot-protocol" }>;
   onResult: (result: GooglePivotResult) => void;
   onDiscard: () => Promise<void>;
+  onNewCheckIn: () => Promise<void>;
 }) {
   const [situationMap, setSituationMap] = useState(result.situationMap);
   const [error, setError] = useState<string>();
@@ -448,6 +470,9 @@ function GooglePivotResultView({
                 : "Only this session shows the result; it will not become personal history."}</p>
               {result.derivedMemory ? <p><strong>Derived memory:</strong> {result.derivedMemory.context}</p> : null}
             </section>
+          ) : null}
+          {result.phase === "outcome" ? (
+            <button className="quiet-button" onClick={() => void onNewCheckIn()} type="button">Start a new Check-in</button>
           ) : null}
         </section>
       ) : null}

@@ -38,6 +38,8 @@ An authenticated person can:
 6. Receive a provenance-aware Situation map, one recommended Pivot, and two
    bounded alternatives.
 7. Inspect the Activity trace and fallback status.
+8. Start a new Check-in after an outcome to see the next recommendation adapt
+   from approved memory.
 
 The Situation map distinguishes the person's statements from guide
 interpretations and uncertainties, while keeping constraints and immediate
@@ -96,6 +98,9 @@ The complete setup guide explains:
 Read [docs/google-cloud-setup-and-deployment.md](docs/google-cloud-setup-and-deployment.md).
 Use only clearly labeled synthetic data for demos and evaluation; see
 [docs/synthetic-evaluation.md](docs/synthetic-evaluation.md).
+For the hosted Collaborative Partner walkthrough, architecture diagram,
+evidence commands, and submission handoff, see
+[docs/judging-path.md](docs/judging-path.md).
 
 After one-time setup, the recurring release path is:
 

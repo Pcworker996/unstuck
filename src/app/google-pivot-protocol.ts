@@ -360,7 +360,7 @@ export async function runGooglePivotProtocol(
   let generatedOutput: unknown;
   try {
     generatedOutput = await generator.generate({ quickDump, situationMap });
-    activity.push({ kind: "generation", message: "Bounded Pivot generation completed." });
+    activity.push({ kind: "generation", message: "Genkit + Gemini generated the bounded Pivot recommendation." });
     output = validatedGeneratedOutput(generatedOutput, situationMap);
   } catch (error) {
     if (generatedOutput !== undefined) {
@@ -380,7 +380,7 @@ export async function runGooglePivotProtocol(
           invalidOutput: generatedOutput ?? error
         });
         output = validatedGeneratedOutput(repairedOutput, situationMap);
-        activity.push({ kind: "generation", message: "Bounded Pivot generation repaired once." });
+        activity.push({ kind: "generation", message: "Genkit + Gemini repaired the bounded Pivot recommendation once." });
       } catch {
         output = fallbackOutput(quickDump, situationMap);
         fallback = true;
