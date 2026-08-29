@@ -7,7 +7,7 @@ from an approved outcome.
 
 Hosted project: <https://unstuck-531032315009.us-central1.run.app>
 
-Last verified deployment: Cloud Run revision `unstuck-00004-6rz` on 2026-08-29.
+Last verified deployment: Cloud Run revision `unstuck-00005-676` on 2026-08-29.
 
 Use an approved Google test identity and synthetic data only. Never paste a
 real address, lease, contact detail, health detail, financial account, secret,
