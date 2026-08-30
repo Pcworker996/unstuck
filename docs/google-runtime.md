@@ -33,7 +33,11 @@ import from another persistence system. Protocols, memories, preferences, and
 quota counters are created on demand under the authenticated owner. Use only
 clearly labeled synthetic data for local demos and evaluation.
 
-Ticket 2 generation uses Genkit with Gemini through Vertex AI. Enable
+Ticket 2 generation uses Genkit with Gemini through Vertex AI. The production
+generator returns validated situational Pivot actions and uses the bounded
+`retrieve_similar_memories` Genkit tool during adaptation; the backend binds the
+authenticated owner, current derived context, exclusions, threshold, and
+three-result limit. Enable
 `aiplatform.googleapis.com` and grant the Cloud Run runtime service account the
 Vertex AI User role (`roles/aiplatform.user`). Configure
 `GOOGLE_CLOUD_LOCATION` (default `us-central1`) and

@@ -239,6 +239,9 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
     case "select-pivot":
       if (typeof body.pivotKind !== "string") throw new HttpInputError("A Pivot selection is required.");
       return { type, pivotKind: body.pivotKind };
+    case "record-step-feedback":
+      if (!isPivotStepFeedback(body.feedback)) throw new HttpInputError("The Pivot step feedback is invalid.");
+      return { type, feedback: body.feedback };
     case "regenerate-pivot":
     case "dismiss-pivot":
       return { type };
@@ -343,6 +346,14 @@ function isPivotOutcome(value: unknown): value is Extract<GooglePivotCommand, { 
   return ["completed", "partly-helpful", "not-a-fit", "skipped"].includes(outcome.status as string) &&
     (outcome.agencyShift === undefined || ["more-able", "about-as-able", "less-able"].includes(outcome.agencyShift as string)) &&
     (outcome.pivotTimeSeconds === undefined || typeof outcome.pivotTimeSeconds === "number");
+}
+
+function isPivotStepFeedback(value: unknown): value is Extract<GooglePivotCommand, { type: "record-step-feedback" }>["feedback"] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const feedback = value as Record<string, unknown>;
+  return Object.keys(feedback).every((key) => ["status", "note"].includes(key)) &&
+    ["completed", "partly-helpful", "not-a-fit", "skipped", "blocked"].includes(feedback.status as string) &&
+    (feedback.note === undefined || (typeof feedback.note === "string" && feedback.note.trim().length <= 500));
 }
 
 async function readBody(request: Request): Promise<unknown> {

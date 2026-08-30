@@ -25,6 +25,7 @@ export function createFirestoreGoogleMemoryRepository(firestore: Firestore): Goo
         embedding: FieldValue.vector(value.embedding),
         selectedPivotKind: value.selectedPivotKind,
         selectedPivotTitle: value.selectedPivotTitle,
+        ...(value.selectedActionTitle ? { selectedActionTitle: value.selectedActionTitle } : {}),
         outcome: value.outcome,
         approved: true,
         forgottenAt: null,
@@ -124,6 +125,7 @@ function toSummary(id: string, value: StoredMemory): GoogleMemorySummary {
     context: value.context,
     selectedPivotKind: value.selectedPivotKind,
     selectedPivotTitle: value.selectedPivotTitle,
+    ...(value.selectedActionTitle ? { selectedActionTitle: value.selectedActionTitle } : {}),
     outcome: value.outcome,
     approved: true
   };
@@ -163,6 +165,7 @@ type StoredMemory = {
   context: string;
   selectedPivotKind: SaveGoogleMemoryInput["selectedPivotKind"];
   selectedPivotTitle: string;
+  selectedActionTitle?: string;
   outcome: SaveGoogleMemoryInput["outcome"];
   approved: true;
   distance?: number;
@@ -177,6 +180,7 @@ function isStoredMemory(value: unknown): value is StoredMemory {
     typeof candidate.context === "string" &&
     typeof candidate.selectedPivotKind === "string" &&
     typeof candidate.selectedPivotTitle === "string" &&
+    (candidate.selectedActionTitle === undefined || typeof candidate.selectedActionTitle === "string") &&
     typeof candidate.outcome === "object" && candidate.outcome !== null &&
     candidate.approved === true;
 }

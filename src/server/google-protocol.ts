@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   runGooglePivotCommand,
+  defaultSituationalActionForPivot,
   type GooglePivotCommand,
   type GooglePivotCommandResult,
   type GooglePivotGenerator,
@@ -329,6 +330,11 @@ function mayUsePlatform(command: GooglePivotCommand, current: Extract<GooglePivo
     return isEditablePhase(current.phase) && current.situationMap.contradictions.some((item) => item.id === command.itemId);
   }
   if (command.type === "regenerate-pivot") return current.phase === "recommended" && Boolean(current.recommendation);
+  if (command.type === "record-step-feedback") {
+    const miniPlan = current.miniPlan;
+    if (current.phase !== "selected" || !miniPlan) return false;
+    return miniPlan.stepNumber <= miniPlan.maxSteps;
+  }
   if (command.type === "exclude-memory" || command.type === "forget-memory" || command.type === "delete-memory") {
     return hasAdaptation && current.memoryExplanations.some((memory) => memory.memoryId === command.memoryId);
   }
@@ -395,6 +401,7 @@ async function persistGoogleDerivedMemory(
       embedding: await embed(state.derivedMemory.context),
       selectedPivotKind: state.selectedPivot.kind,
       selectedPivotTitle: state.selectedPivot.title,
+      ...(state.selectedAction ? { selectedActionTitle: state.selectedAction.title } : {}),
       outcome: state.outcome,
       approved: true
     });
@@ -551,8 +558,16 @@ function isPivotState(value: unknown): value is Extract<GooglePivotResult, { kin
 function normalizePivotState(
   state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
 ): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
+  const recommendation = state.recommendation
+    ? {
+        ...state.recommendation,
+        primaryAction: state.recommendation.primaryAction ?? defaultSituationalActionForPivot(state.recommendation.primary),
+        alternativeActions: state.recommendation.alternativeActions ?? state.recommendation.alternatives.map(defaultSituationalActionForPivot)
+      }
+    : undefined;
   return {
     ...state,
+    ...(recommendation ? { recommendation } : {}),
     memoryExplanations: state.memoryExplanations ?? [],
     retrievedMemories: state.retrievedMemories ?? [],
     retrievalAttempted: state.retrievalAttempted ?? false,

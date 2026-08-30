@@ -12,6 +12,7 @@ export type GoogleMemorySummary = {
   context: string;
   selectedPivotKind: PivotKind;
   selectedPivotTitle: string;
+  selectedActionTitle?: string;
   outcome: PivotOutcome;
   approved: true;
 };
@@ -36,6 +37,7 @@ export type SaveGoogleMemoryInput = {
   embedding: readonly number[];
   selectedPivotKind: PivotKind;
   selectedPivotTitle: string;
+  selectedActionTitle?: string;
   outcome: PivotOutcome;
   approved: true;
 };
@@ -123,6 +125,7 @@ export function createInMemoryGoogleMemoryRepository(
         embedding: validateGoogleEmbedding(input.embedding),
         selectedPivotKind: input.selectedPivotKind,
         selectedPivotTitle: input.selectedPivotTitle,
+        ...(input.selectedActionTitle ? { selectedActionTitle: input.selectedActionTitle } : {}),
         outcome: input.outcome,
         approved: true
       };
@@ -195,6 +198,7 @@ function summary(memory: StoredMemory): GoogleMemorySummary {
     context: memory.context,
     selectedPivotKind: memory.selectedPivotKind,
     selectedPivotTitle: memory.selectedPivotTitle,
+    ...(memory.selectedActionTitle ? { selectedActionTitle: memory.selectedActionTitle } : {}),
     outcome: memory.outcome,
     approved: true
   };

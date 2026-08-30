@@ -21,6 +21,77 @@ function output(
 }
 
 describe("collaborative Google Pivot Protocol", () => {
+  it("generates situational actions one step at a time from explicit feedback", async () => {
+    let generations = 0;
+    const action = (step: number) => ({
+      id: `action-${step}`,
+      kind: "task-first-step" as const,
+      title: `Synthetic step ${step}`,
+      instruction: `Do the synthetic step ${step} for this situation.`,
+      estimatedMinutes: 5,
+      fallbackInstruction: `Make synthetic step ${step} smaller.`
+    });
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap, currentAction, stepFeedback }) {
+        generations += 1;
+        const step = currentAction && stepFeedback ? generations : 1;
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          primaryAction: action(step),
+          alternativeActions: [
+            { ...action(step), id: `grounding-${step}`, kind: "grounding", title: `Grounding alternative ${step}` },
+            { ...action(step), id: `reaching-out-${step}`, kind: "reaching-out", title: `Connection alternative ${step}` }
+          ],
+          whyThisPivot: "The action reflects the current synthetic situation."
+        };
+      }
+    };
+
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I need to sort a synthetic task.",
+      consentGiven: true
+    }, generator);
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok" || !started.state.recommendation) return;
+
+    const selected = await runGooglePivotCommand(started.state, {
+      type: "select-pivot",
+      pivotKind: "task-first-step"
+    }, generator);
+    expect(selected.kind).toBe("ok");
+    if (selected.kind !== "ok") return;
+    expect(selected.state.miniPlan).toMatchObject({ stepNumber: 1, currentAction: { title: "Synthetic step 1" } });
+
+    const next = await runGooglePivotCommand(selected.state, {
+      type: "record-step-feedback",
+      feedback: { status: "completed" }
+    }, generator);
+    expect(next.kind).toBe("ok");
+    if (next.kind !== "ok") return;
+    expect(next.state.miniPlan).toMatchObject({ stepNumber: 2, currentAction: { title: "Synthetic step 2" }, feedback: [{ status: "completed" }] });
+
+    const finalStep = await runGooglePivotCommand(next.state, {
+      type: "record-step-feedback",
+      feedback: { status: "blocked", note: "Synthetic blocker" }
+    }, generator);
+    expect(finalStep.kind).toBe("ok");
+    if (finalStep.kind !== "ok") return;
+    expect(finalStep.state.miniPlan).toMatchObject({ stepNumber: 3, currentAction: { title: "Synthetic step 3" }, feedback: [{ status: "completed" }, { status: "blocked", note: "Synthetic blocker" }] });
+
+    const capped = await runGooglePivotCommand(finalStep.state, {
+      type: "record-step-feedback",
+      feedback: { status: "partly-helpful" }
+    }, generator);
+    expect(capped.kind).toBe("ok");
+    if (capped.kind !== "ok") return;
+    expect(capped.state.miniPlan?.stepNumber).toBe(3);
+    expect(capped.state.miniPlan?.feedback).toHaveLength(3);
+    expect(generations).toBe(3);
+  });
+
   it("asks one clarification at a time, allows skips, and caps questions at two", async () => {
     let generation = 0;
     const generator: GooglePivotGenerator = {

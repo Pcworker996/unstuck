@@ -126,6 +126,64 @@ describe("Google memory boundary", () => {
     expect(result).not.toHaveProperty("pendingDerivedContext");
   });
 
+  it("passes owner-bound memory retrieval through the strict Genkit tool seam", async () => {
+    const repository = createInMemoryGoogleMemoryRepository();
+    await repository.saveDerivedMemory({
+      ownerSubject: "person-1",
+      protocolId: "prior-protocol",
+      memoryId: "prior-memory",
+      context: "A synthetic small action helped.",
+      embedding: vector(1),
+      selectedPivotKind: "task-first-step",
+      selectedPivotTitle: "Make the next step visible",
+      selectedActionTitle: "Open only the form with the nearest deadline",
+      outcome: { status: "completed" },
+      approved: true
+    });
+    let toolCalls = 0;
+    const generator: GooglePivotGenerator = {
+      usesMemoryTool: true,
+      async generate({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "grounding",
+          alternativePivotKinds: ["breathing-focus", "reaching-out"],
+          whyThisPivot: "A bounded starting point."
+        };
+      },
+      async prepareMemory() { return "A current synthetic context."; },
+      async adapt({ situationMap, memoryTool }) {
+        toolCalls += 1;
+        const memories = await memoryTool?.retrieveSimilarMemories();
+        expect(memories).toHaveLength(1);
+        expect(memories?.[0]).not.toHaveProperty("similarity");
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          whyThisPivot: "The retrieved synthetic outcome supports a concrete next action."
+        };
+      }
+    };
+
+    const result = await runGooglePivotProtocol({
+      quickDump: "I am stuck on a synthetic task.",
+      consentGiven: true
+    }, generator, {
+      ownerSubject: "person-1",
+      embed: async () => vector(1),
+      retrieveSimilarMemories: (input) => repository.retrieveSimilarMemories(input),
+      listGuidancePreferences: (ownerSubject) => repository.listGuidancePreferences(ownerSubject)
+    });
+
+    expect(toolCalls).toBe(1);
+    expect(result).toMatchObject({
+      kind: "pivot-protocol",
+      retrievalAttempted: true,
+      retrievedMemories: [{ id: "prior-memory", selectedActionTitle: "Open only the form with the nearest deadline" }]
+    });
+  });
+
   it("creates one approved embedded memory only after a saved outcome", async () => {
     const protocolRepository = createInMemoryGoogleProtocolRepository();
     const memoryRepository = createInMemoryGoogleMemoryRepository();

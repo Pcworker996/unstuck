@@ -35,15 +35,19 @@ An authenticated person can:
 3. Enter a Quick dump without attaching an artifact.
 4. Give explicit processing consent.
 5. Pass the direct-input Safety gate.
-6. Receive a provenance-aware Situation map, one recommended Pivot, and two
-   bounded alternatives.
+6. Receive a provenance-aware Situation map, one situationally tailored Pivot
+   action, and two bounded alternatives.
 7. Inspect the Activity trace and fallback status.
-8. Start a new Check-in after an outcome to see the next recommendation adapt
+8. Select the action and report step feedback. The guide generates the next
+   mini-plan step only after feedback, for at most three steps.
+9. Start a new Check-in after an outcome to see the next recommendation adapt
    from approved memory.
 
 The Situation map distinguishes the person's statements from guide
 interpretations and uncertainties, while keeping constraints and immediate
-progress visible.
+progress visible. The application-owned `retrieve_similar_memories` Genkit
+tool is read-only and server-bound: Gemini cannot choose an owner, issue a
+database query, see vector scores, or take an external action.
 
 ## Local development
 

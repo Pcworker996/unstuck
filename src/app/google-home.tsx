@@ -5,7 +5,7 @@ import type { FormEvent } from "react";
 
 import { getFirebaseGoogleAuthClient } from "../lib/firebase-google-auth";
 import { googleImageBytesToBase64 } from "./google-image-artifact";
-import type { GooglePivotResult, SituationMap } from "./google-pivot-protocol";
+import type { GooglePivotResult, PivotStepFeedback, SituationMap } from "./google-pivot-protocol";
 
 type Person = {
   id: string;
@@ -442,15 +442,26 @@ function GooglePivotResultView({
       {mapEditable && (result.artifacts?.filter((artifact) => artifact.status === "accepted").length ?? 0) < 5 ? <OptionalArtifactUpload onAdd={(artifacts) => void command({ type: "add-artifacts", artifacts })} /> : null}
       {result.phase !== "clarifying" && result.phase !== "dismissed" && recommendation ? (
         <section className="pivot-card" aria-labelledby="google-pivot-heading">
-          <p className="eyebrow">{result.phase === "outcome" ? "Pivot outcome" : "Recommended Pivot"}</p>
-          <h2 id="google-pivot-heading">{recommendation.primary.title}</h2>
-          <p>{recommendation.primary.instruction}</p>
+          {(() => {
+            const action = result.phase === "selected" && result.miniPlan
+              ? result.miniPlan.currentAction
+              : recommendation.primaryAction;
+            return (
+              <>
+                <p className="eyebrow">{result.phase === "outcome" ? "Pivot outcome" : result.phase === "selected" ? `Mini-plan step ${result.miniPlan?.stepNumber ?? 1} of ${result.miniPlan?.maxSteps ?? 3}` : "Recommended Pivot"}</p>
+                <h2 id="google-pivot-heading">{action.title}</h2>
+                <p>{action.instruction}</p>
+                <p className="privacy-note">Estimated time: {action.estimatedMinutes} minutes.</p>
+                {result.phase === "selected" ? <p className="privacy-note">If this feels too large: {action.fallbackInstruction}</p> : null}
+              </>
+            );
+          })()}
           <p className="pivot-explanation">{recommendation.whyThisPivot}</p>
           {result.fallback ? <p className="privacy-note">A curated fallback is keeping your accepted Situation map available.</p> : null}
           {result.adaptationStatus === "unavailable" ? <p className="privacy-note">Personalization is temporarily unavailable; this recommendation uses only the current Situation map.</p> : null}
           <div className="alternatives">
             <h3>Two other options</h3>
-            {recommendation.alternatives.map((pivot) => <p key={pivot.id}>{pivot.title}</p>)}
+            {recommendation.alternativeActions.map((action) => <p key={action.id}>{action.title}</p>)}
           </div>
           {result.phase === "recommended" ? (
             <div className="button-row">
@@ -459,7 +470,12 @@ function GooglePivotResultView({
               <button className="text-button" onClick={() => void command({ type: "dismiss-pivot" })} type="button">Dismiss</button>
             </div>
           ) : null}
-          {result.phase === "selected" ? <OutcomeControls onSubmit={(outcome) => void command({ type: "record-outcome", outcome })} /> : null}
+          {result.phase === "selected" ? (
+            <>
+              {result.miniPlan ? <MiniPlanFeedbackControls onSubmit={(feedback) => void command({ type: "record-step-feedback", feedback })} /> : null}
+              <OutcomeControls onSubmit={(outcome) => void command({ type: "record-outcome", outcome })} />
+            </>
+          ) : null}
           {result.outcome ? <p className="form-message">Recorded: {result.outcome.status}{result.outcome.agencyShift ? `, ${result.outcome.agencyShift}` : ""}.</p> : null}
           {result.phase === "outcome" ? (
             <section className="history-card" aria-label="Saved Check-in status">
@@ -558,7 +574,7 @@ function GoogleSavedHistory({ refreshKey }: { refreshKey: number }) {
                 <span>{state.checkIn.quickDump}</span>
                 <details>
                   <summary>Inspect retained state</summary>
-                  <p><strong>Selected Pivot:</strong> {state.selectedPivot?.title}</p>
+                  <p><strong>Selected Pivot:</strong> {state.selectedAction?.title ?? state.selectedPivot?.title}</p>
                   <p><strong>Situation map:</strong> {state.situationMap.shared.map((item) => item.text).join(" ")}</p>
                   {state.derivedMemory ? <p><strong>Derived memory:</strong> {state.derivedMemory.context}</p> : <p>No Derived memory was retained.</p>}
                 </details>
@@ -641,6 +657,26 @@ function OutcomeControls({ onSubmit }: { onSubmit: (outcome: { status: "complete
         <option value="about-as-able">About as able</option>
         <option value="less-able">Less able</option>
       </select>
+    </div>
+  );
+}
+
+function MiniPlanFeedbackControls({ onSubmit }: { onSubmit: (feedback: PivotStepFeedback) => void }) {
+  return (
+    <div className="outcome-controls">
+      <p><strong>What happened with this step?</strong></p>
+      <p className="privacy-note">Your answer helps the guide choose the next step. You can record the overall outcome separately below.</p>
+      <div className="button-row">
+        {([
+          ["completed", "Completed"],
+          ["partly-helpful", "Partly helpful"],
+          ["blocked", "Blocked"],
+          ["not-a-fit", "Not a fit"],
+          ["skipped", "Skipped"]
+        ] as const).map(([status, label]) => (
+          <button key={status} className="quiet-button" onClick={() => onSubmit({ status })} type="button">{label}</button>
+        ))}
+      </div>
     </div>
   );
 }

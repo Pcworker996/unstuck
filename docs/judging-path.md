@@ -21,7 +21,8 @@ flowchart LR
   Auth[Firebase Authentication\nGoogle sign-in]
   Run[Cloud Run\nNext.js + Pivot Protocol]
   Genkit[Genkit orchestration]
-  Gemini[Gemini 3.5 Flash\nVertex AI]
+  Gemini[Gemini model\nVertex AI]
+  MemoryTool[Genkit tool\nretrieve_similar_memories]
   Firestore[(Firestore\nowner-scoped state + retrieval)]
   Storage[(Cloud Storage\nprivate temporary PDFs)]
   Logs[Cloud Logging\nprivacy-safe telemetry]
@@ -31,6 +32,8 @@ flowchart LR
   Auth --> Run
   Run --> Genkit
   Genkit --> Gemini
+  Genkit --> MemoryTool
+  MemoryTool --> Firestore
   Run --> Firestore
   Run --> Storage
   Run --> Logs
@@ -56,15 +59,20 @@ minutes:
    record an outcome**. Optionally attach a synthetic landlord-message image
    and moving-checklist PDF.
 4. Submit **Create Situation map**. Show the editable Situation map, artifact
-   claims, the **Genkit + Gemini** activity entry, and the bounded recommendation.
+   claims, the **Genkit + Gemini** activity entry, and the bounded recommendation
+   with its situation-specific action and smaller fallback.
 5. Correct one map item, then answer one clarification question. Show the
    correction and the updated recommendation.
-6. Choose the Pivot, complete the small action, record `completed`, and choose
-   `more able`. Show the saved Check-in and compact Derived memory.
+6. Choose the Pivot, perform the current mini-plan action, and report explicit
+   feedback such as `completed`. Show the next tailored action. Repeat only as
+   useful; the guide waits for feedback and stops after at most three steps.
+   Then record the final outcome and choose `more able`. Show the saved
+   Check-in and compact Derived memory containing the selected action.
 7. Choose **Start a new Check-in**. Use a differently worded synthetic dump:
    `I have too many move-related forms and cannot decide what to handle first.`
 8. Show **Why this was adapted**, inspect the linked saved Check-in, and point
-   out that the recommendation used the approved prior outcome. Use **Forget**
+   out that the recommendation used the approved prior outcome through the
+   read-only `retrieve_similar_memories` Genkit tool. Use **Forget**
    or **Exclude before regenerating** to show user control.
 
 The run proves visible state mutation through the saved retention state and
@@ -172,6 +180,6 @@ the application quotas remain the hard request bound.
 | Video | Record and add a public English YouTube/Vimeo URL before submission; no URL is fabricated in the repository |
 | Disclosure | The repository history begins with the pre-period baseline on 2026-08-04; Google Firebase, Firestore, Genkit, Vertex AI, Cloud Run, and Cloud Storage are disclosed runtime services. |
 
-Calendar, articles, social posts, and additional model integrations remain
-cuttable. They must not delay the core hosted flow, evidence capture, or public
-video.
+External integrations, articles, social posts, and additional model
+integrations remain cuttable. They must not delay the core hosted flow, evidence
+capture, or public video.

@@ -20,7 +20,7 @@ import {
 import { createInMemoryGoogleMemoryRepository } from "../server/google-memory";
 import type { GoogleQuotaService } from "../server/google-quotas";
 
-export const GOOGLE_EVALUATION_PROMPT_VERSION = "ticket-10-synthetic-v1";
+export const GOOGLE_EVALUATION_PROMPT_VERSION = "ticket-10-synthetic-v2-situational-mini-plan";
 
 export type DeterministicGoogleEvaluationCase = {
   id: string;
