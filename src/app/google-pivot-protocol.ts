@@ -669,6 +669,9 @@ async function runGooglePivotCommandInternal(
     if (current) {
       return { kind: "invalid-command", message: "This protocol has already started." };
     }
+    if (!command.quickDump.trim() || command.quickDump.length > 10_000) {
+      return { kind: "invalid-command", message: "A Quick dump must be between 1 and 10,000 characters." };
+    }
 
     const result = await runGooglePivotProtocol(command, generator, adaptation);
     if (result.kind === "pivot-protocol") return { kind: "ok", state: result };
@@ -680,6 +683,23 @@ async function runGooglePivotCommandInternal(
     return { kind: "invalid-command", message: "Start the protocol before sending commands." };
   }
 
+  try {
+    return await dispatchGooglePivotCommand(current, command, generator, adaptation);
+  } catch {
+    return {
+      kind: "dependency-unavailable",
+      message: "This request could not be completed; your valid protocol state was preserved.",
+      state: current
+    };
+  }
+}
+
+async function dispatchGooglePivotCommand(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  command: Exclude<GooglePivotCommand, { type: "start" }>,
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
+): Promise<GooglePivotCommandResult> {
   const laterUserMessage = googlePivotSafetyMessage(command);
   if (laterUserMessage) {
     const safetyResult = googlePivotSafetyResult(laterUserMessage);
@@ -1317,8 +1337,8 @@ async function answerClarification(
 
   const skipped = command.type === "skip-clarification";
   const answer = skipped ? undefined : command.answer.trim();
-  if (!skipped && !answer) {
-    return { kind: "invalid-command", message: "An answer cannot be empty." };
+  if (!skipped && (!answer || answer.length > 10_000)) {
+    return { kind: "invalid-command", message: "A clarification answer must be between 1 and 10,000 characters." };
   }
   const clarificationAnswers = [
     ...current.clarification.answers,
@@ -1450,11 +1470,14 @@ async function correctMap(
   adaptation?: GooglePivotAdaptation
 ): Promise<GooglePivotCommandResult> {
   const text = command.text.trim();
-  if (!text) {
-    return { kind: "invalid-command", message: "A Situation-map correction cannot be empty." };
+  if (!text || text.length > 10_000) {
+    return { kind: "invalid-command", message: "A Situation-map correction must be between 1 and 10,000 characters." };
   }
   if (!isSituationMapEditable(current.phase)) return mapEditPhaseError();
   const items = current.situationMap[command.section];
+  if (!Array.isArray(items)) {
+    return { kind: "invalid-command", message: "That Situation-map section does not exist." };
+  }
   const item = items.find((candidate) => candidate.id === command.itemId);
   if (!item) {
     return { kind: "invalid-command", message: "That Situation-map item no longer exists." };

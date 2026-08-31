@@ -512,4 +512,86 @@ describe("Google Pivot HTTP interface", () => {
     expect(stale.status).toBe(409);
     await expect(stale.json()).resolves.toMatchObject({ kind: "conflict", protocol: { version: 2 } });
   });
+
+  it("rejects an oversized Situation-map correction as a typed request error", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+    await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({ protocolId: "protocol-1", expectedVersion: 0, idempotencyKey: "start-1", type: "start", quickDump: "I keep avoiding the first step.", consentGiven: true })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository
+    );
+
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          expectedVersion: 1,
+          idempotencyKey: "correction-1",
+          type: "correct-map",
+          section: "shared",
+          itemId: "shared-1",
+          text: "x".repeat(10_001)
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ kind: "invalid-request" });
+  });
+
+  it("rejects an oversized clarification answer as a typed request error", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+    const generator = {
+      async generate({ situationMap }: { situationMap: import("../app/google-pivot-protocol").SituationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          whyThisPivot: "A bounded next step is available.",
+          clarificationQuestion: { id: "clarify-1", text: "What is the very next step?" }
+        };
+      }
+    };
+    await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({ protocolId: "protocol-1", expectedVersion: 0, idempotencyKey: "start-1", type: "start", quickDump: "I keep avoiding the first step.", consentGiven: true })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository,
+      generator
+    );
+
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1",
+          expectedVersion: 1,
+          idempotencyKey: "answer-1",
+          type: "answer-clarification",
+          questionId: "clarify-1",
+          answer: "x".repeat(10_001)
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository,
+      generator
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ kind: "invalid-request" });
+  });
 });

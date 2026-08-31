@@ -233,13 +233,17 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
       if (typeof body.itemId !== "string" || !body.itemId.trim()) throw new HttpInputError("An artifact claim identifier is required.");
       return { type, itemId: body.itemId.trim() };
     case "answer-clarification":
-      if (typeof body.questionId !== "string" || typeof body.answer !== "string") throw new HttpInputError("A clarification question and answer are required.");
+      if (typeof body.questionId !== "string" || typeof body.answer !== "string" || body.answer.length > 10_000) {
+        throw new HttpInputError("A clarification question and answer are required and the answer must be 10,000 characters or smaller.");
+      }
       return { type, questionId: body.questionId.trim(), answer: body.answer };
     case "skip-clarification":
       if (typeof body.questionId !== "string") throw new HttpInputError("A clarification question is required.");
       return { type, questionId: body.questionId.trim() };
     case "correct-map":
-      if (!isSituationMapSection(body.section) || typeof body.itemId !== "string" || typeof body.text !== "string") throw new HttpInputError("A Situation-map correction is invalid.");
+      if (!isSituationMapSection(body.section) || typeof body.itemId !== "string" || typeof body.text !== "string" || body.text.length > 10_000) {
+        throw new HttpInputError("A Situation-map correction is invalid and must be 10,000 characters or smaller.");
+      }
       return { type, section: body.section, itemId: body.itemId.trim(), text: body.text };
     case "resolve-contradiction":
       if (typeof body.itemId !== "string" || !body.itemId.trim()) throw new HttpInputError("A contradiction identifier is required.");

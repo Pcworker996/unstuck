@@ -638,6 +638,105 @@ describe("Google Pivot Protocol", () => {
     expect(removed.state.artifacts[0].status).toBe("removed");
   });
 
+  it("rejects a whitespace-only Quick dump passed directly to the command seam instead of crashing", async () => {
+    const result = await runGooglePivotCommand(undefined, { type: "start", quickDump: "   ", consentGiven: true });
+    expect(result).toMatchObject({ kind: "invalid-command" });
+  });
+
+  it("rejects an oversized Situation-map correction instead of crashing the conversation", async () => {
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+      }
+    };
+    const started = await runGooglePivotProtocol({
+      quickDump: "I keep avoiding the moving checklist.",
+      consentGiven: true
+    }, generator);
+    expect(started.kind).toBe("pivot-protocol");
+    if (started.kind !== "pivot-protocol") return;
+
+    const oversized = await runGooglePivotCommand(started, {
+      type: "correct-map",
+      section: "shared",
+      itemId: "shared-1",
+      text: "x".repeat(10_001)
+    }, generator);
+
+    expect(oversized).toMatchObject({ kind: "invalid-command" });
+    if (oversized.kind !== "invalid-command") return;
+    expect(oversized.message).toMatch(/10,000/);
+
+    const stillWorks = await runGooglePivotCommand(started, {
+      type: "correct-map",
+      section: "shared",
+      itemId: "shared-1",
+      text: "I need to start with the lease checklist."
+    }, generator);
+    expect(stillWorks.kind).toBe("ok");
+  });
+
+  it("rejects an oversized clarification answer instead of crashing the conversation", async () => {
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap, clarificationAnswers }) {
+        if (!clarificationAnswers || clarificationAnswers.length === 0) {
+          return {
+            situationMap,
+            primaryPivotKind: "task-first-step",
+            alternativePivotKinds: ["grounding", "reaching-out"],
+            whyThisPivot: "A bounded next step.",
+            clarificationQuestion: { id: "clarify-1", text: "What is the very next step?" }
+          };
+        }
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+      }
+    };
+    const started = await runGooglePivotProtocol({
+      quickDump: "I keep avoiding the moving checklist.",
+      consentGiven: true
+    }, generator);
+    expect(started.kind).toBe("pivot-protocol");
+    if (started.kind !== "pivot-protocol" || !started.clarification) return;
+
+    const oversized = await runGooglePivotCommand(started, {
+      type: "answer-clarification",
+      questionId: started.clarification.question.id,
+      answer: "x".repeat(10_001)
+    }, generator);
+
+    expect(oversized).toMatchObject({ kind: "invalid-command" });
+    if (oversized.kind !== "invalid-command") return;
+    expect(oversized.message).toMatch(/10,000/);
+  });
+
+  it("returns a curated fallback instead of throwing when a command handler fails unexpectedly", async () => {
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+      }
+    };
+    const started = await runGooglePivotProtocol({
+      quickDump: "I keep avoiding the moving checklist.",
+      consentGiven: true
+    }, generator);
+    expect(started.kind).toBe("pivot-protocol");
+    if (started.kind !== "pivot-protocol") return;
+
+    const corrupted = {
+      ...started,
+      situationMap: { ...started.situationMap, shared: undefined as unknown as SituationMap["shared"] }
+    };
+
+    const result = await runGooglePivotCommand(corrupted, {
+      type: "add-context",
+      message: "This should not crash the protocol."
+    }, generator);
+
+    expect(result).toMatchObject({ kind: "dependency-unavailable" });
+    if (result.kind !== "dependency-unavailable") return;
+    expect(result.state).toBe(corrupted);
+  });
+
   it("requires explicit approval before an image claim can enter saved map state", async () => {
     const generator: GooglePivotGenerator = {
       async generate({ situationMap }) {
