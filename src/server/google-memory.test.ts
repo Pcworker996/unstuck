@@ -419,6 +419,98 @@ describe("Google memory boundary", () => {
     expect(result.memoryExplanations).toMatchObject([{ memoryId: "cautionary-memory" }]);
   });
 
+  it("keeps tailored actions for non-cautionary pivots when only one Pivot is cautionary", async () => {
+    const repository = createInMemoryGoogleMemoryRepository();
+    await repository.saveDerivedMemory({
+      ownerSubject: "person-1",
+      protocolId: "cautionary-protocol",
+      memoryId: "cautionary-memory",
+      context: "A task-first step was not a fit.",
+      embedding: vector(1),
+      selectedPivotKind: "task-first-step",
+      selectedPivotTitle: "Make the next step visible",
+      outcome: { status: "not-a-fit" },
+      approved: true
+    });
+
+    const groundingAction = {
+      id: "name-one-object",
+      kind: "grounding" as const,
+      title: "Name one object you can see right now",
+      instruction: "Look around and name one object out loud.",
+      goal: "Bring attention back to the immediate room.",
+      steps: ["Name one object you can see.", "Notice its color or shape."],
+      doneWhen: "You have named one object.",
+      estimatedMinutes: 2,
+      fallbackInstruction: "If naming feels like too much, just look at one object.",
+      whyThisFits: "A single object gives the mind one concrete, low-effort anchor."
+    };
+    const reachingOutAction = {
+      id: "send-one-message",
+      kind: "reaching-out" as const,
+      title: "Send one specific check-in message",
+      instruction: "Send a short message to one person naming what feels stuck.",
+      goal: "Let one other person know what is going on right now.",
+      steps: ["Pick one person to message.", "Send one short, specific message."],
+      doneWhen: "The message has been sent.",
+      estimatedMinutes: 5,
+      fallbackInstruction: "If sending feels like too much, draft the message without sending it.",
+      whyThisFits: "One specific message is a small, bounded way to reduce isolation."
+    };
+
+    const result = await runGooglePivotProtocol({
+      quickDump: "I am stuck on a work task.",
+      consentGiven: true
+    }, {
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "grounding", alternativePivotKinds: ["breathing-focus", "reaching-out"], whyThisPivot: "A bounded option." };
+      },
+      async prepareMemory() { return "A current derived context."; },
+      async adapt({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          whyThisPivot: "The prior action seems relevant.",
+          primaryAction: {
+            id: "open-task-checklist",
+            kind: "task-first-step",
+            title: "Open the task checklist and circle one item",
+            instruction: "Open the checklist and circle one item.",
+            goal: "Choose one item to make the first task concrete.",
+            steps: ["Open the checklist.", "Circle the nearest item."],
+            doneWhen: "One item is circled.",
+            estimatedMinutes: 5,
+            fallbackInstruction: "If opening the checklist feels too large, put it away and stop.",
+            whyThisFits: "You named the checklist as the part that is keeping you stuck."
+          },
+          alternativeActions: [groundingAction, reachingOutAction]
+        };
+      }
+    }, {
+      ownerSubject: "person-1",
+      embed: async () => vector(1),
+      retrieveSimilarMemories: (input) => repository.retrieveSimilarMemories(input),
+      listGuidancePreferences: async () => []
+    });
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol" || !result.recommendation) return;
+    expect(result.recommendation.primary.kind).toBe("grounding");
+    expect(result.recommendation.primaryAction).toMatchObject({ goal: groundingAction.goal });
+
+    const reachingOutIndex = result.recommendation.alternatives.findIndex((pivot) => pivot.kind === "reaching-out");
+    expect(reachingOutIndex).toBeGreaterThanOrEqual(0);
+    expect(result.recommendation.alternativeActions[reachingOutIndex]).toMatchObject({ goal: reachingOutAction.goal });
+
+    const taskFirstStepIndex = result.recommendation.alternatives.findIndex((pivot) => pivot.kind === "task-first-step");
+    expect(taskFirstStepIndex).toBeGreaterThanOrEqual(0);
+    expect(result.recommendation.alternativeActions[taskFirstStepIndex]).toMatchObject({
+      id: "open-task-checklist-smaller",
+      steps: ["Open the checklist."]
+    });
+  });
+
   it("lets a completed more-able memory strengthen a relevant Pivot", async () => {
     const repository = createInMemoryGoogleMemoryRepository();
     await repository.saveDerivedMemory({

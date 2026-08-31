@@ -2246,16 +2246,45 @@ function applyOutcomeSignals(
   preferences: readonly GoogleGuidancePreference[]
 ): GooglePivotGeneratorOutput {
   const cautionaryKinds = cautionaryMemoryKinds(memories);
-  const primary = findPivot(output.primaryPivotKind);
-  const relatedKinds = [output.primaryPivotKind, ...output.alternativePivotKinds]
-    .flatMap((kind) => {
-      const pivot = findPivot(kind);
-      return pivot ? [pivot.kind] : [];
-    });
-  if (!primary || !relatedKinds.some((kind) => cautionaryKinds.has(kind))) {
+  const primaryKindValue = requirePivot(output.primaryPivotKind).kind;
+  const alternativeKindValues = output.alternativePivotKinds.map((kind) => requirePivot(kind).kind);
+  const originalKinds = [primaryKindValue, ...alternativeKindValues];
+  if (!originalKinds.some((kind) => cautionaryKinds.has(kind))) {
     return output;
   }
-  return fallbackAdaptation(situationMap, memories, preferences);
+
+  const avoidBreathing = preferences.some((preference) => /avoid.*breath|not.*breath/i.test(preference.text));
+  const isUsable = (kind: PivotKind) => !cautionaryKinds.has(kind) && !(avoidBreathing && kind === "breathing-focus");
+
+  const actionByKind = new Map<PivotKind, SituationalPivotAction>();
+  if (output.primaryAction) actionByKind.set(primaryKindValue, output.primaryAction);
+  alternativeKindValues.forEach((kind, index) => {
+    const action = output.alternativeActions?.[index];
+    if (action) actionByKind.set(kind, action);
+  });
+  const actionFor = (kind: PivotKind): SituationalPivotAction => {
+    const base = actionByKind.get(kind) ?? situationalActionForPivot(requirePivot(kind));
+    return cautionaryKinds.has(kind) ? smallerActionFor(base) : base;
+  };
+
+  // Keep the model's own tailored actions; only swap the primary Pivot kind
+  // when it is cautionary, and only shrink actions for kinds that remain
+  // cautionary. A cautionary signal shrinks or avoids one action, not the
+  // whole personalized recommendation.
+  const primaryKind = isUsable(primaryKindValue)
+    ? primaryKindValue
+    : originalKinds.find(isUsable) ?? PIVOT_LIBRARY.map((pivot) => pivot.kind).find(isUsable) ?? primaryKindValue;
+  const remainingKinds = originalKinds.filter((kind) => kind !== primaryKind);
+  const libraryFill = PIVOT_LIBRARY.map((pivot) => pivot.kind).filter((kind) => !remainingKinds.includes(kind) && kind !== primaryKind);
+  const alternativeKinds = [...remainingKinds, ...libraryFill].slice(0, 2);
+
+  return {
+    ...output,
+    primaryPivotKind: primaryKind,
+    alternativePivotKinds: alternativeKinds,
+    primaryAction: actionFor(primaryKind),
+    alternativeActions: alternativeKinds.map(actionFor)
+  };
 }
 
 function cautionaryMemoryKinds(memories: readonly GoogleRetrievedMemory[]): Set<GoogleRetrievedMemory["selectedPivotKind"]> {
