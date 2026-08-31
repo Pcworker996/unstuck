@@ -27,6 +27,7 @@ export function createFirestoreGoogleMemoryRepository(firestore: Firestore): Goo
         selectedPivotTitle: value.selectedPivotTitle,
         ...(value.selectedActionTitle ? { selectedActionTitle: value.selectedActionTitle } : {}),
         outcome: value.outcome,
+        ...(value.cautionarySignals ? { cautionarySignals: value.cautionarySignals } : {}),
         approved: true,
         forgottenAt: null,
         excludedAt: null,
@@ -127,6 +128,7 @@ function toSummary(id: string, value: StoredMemory): GoogleMemorySummary {
     selectedPivotTitle: value.selectedPivotTitle,
     ...(value.selectedActionTitle ? { selectedActionTitle: value.selectedActionTitle } : {}),
     outcome: value.outcome,
+    ...(value.cautionarySignals ? { cautionarySignals: value.cautionarySignals } : {}),
     approved: true
   };
 }
@@ -167,6 +169,7 @@ type StoredMemory = {
   selectedPivotTitle: string;
   selectedActionTitle?: string;
   outcome: SaveGoogleMemoryInput["outcome"];
+  cautionarySignals?: SaveGoogleMemoryInput["cautionarySignals"];
   approved: true;
   distance?: number;
   forgottenAt?: string | null;
@@ -182,6 +185,7 @@ function isStoredMemory(value: unknown): value is StoredMemory {
     typeof candidate.selectedPivotTitle === "string" &&
     (candidate.selectedActionTitle === undefined || typeof candidate.selectedActionTitle === "string") &&
     typeof candidate.outcome === "object" && candidate.outcome !== null &&
+    (candidate.cautionarySignals === undefined || (Array.isArray(candidate.cautionarySignals) && candidate.cautionarySignals.every((signal) => signal === "blocked"))) &&
     candidate.approved === true;
 }
 

@@ -503,6 +503,9 @@ async function persistGoogleDerivedMemory(
     };
   }
   try {
+    const cautionarySignals = state.miniPlan?.feedback.some((feedback) => feedback.status === "blocked")
+      ? ["blocked" as const]
+      : undefined;
     const saved = await repository.saveDerivedMemory({
       ownerSubject,
       protocolId,
@@ -513,6 +516,7 @@ async function persistGoogleDerivedMemory(
       selectedPivotTitle: state.selectedPivot.title,
       ...(state.selectedAction ? { selectedActionTitle: state.selectedAction.title } : {}),
       outcome: state.outcome,
+      ...(cautionarySignals ? { cautionarySignals } : {}),
       approved: true
     });
     return {

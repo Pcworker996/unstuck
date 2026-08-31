@@ -1,5 +1,5 @@
 import { PIVOT_LIBRARY, type PivotKind } from "../app/pivot-library";
-import type { PivotOutcome } from "../app/google-pivot-protocol";
+import type { GoogleCautionarySignal, PivotOutcome } from "../app/google-pivot-protocol";
 
 export const GOOGLE_EMBEDDING_MODEL_ID = "gemini-embedding-001";
 export const GOOGLE_EMBEDDING_DIMENSIONS = 768;
@@ -14,6 +14,7 @@ export type GoogleMemorySummary = {
   selectedPivotTitle: string;
   selectedActionTitle?: string;
   outcome: PivotOutcome;
+  cautionarySignals?: GoogleCautionarySignal[];
   approved: true;
 };
 
@@ -39,6 +40,7 @@ export type SaveGoogleMemoryInput = {
   selectedPivotTitle: string;
   selectedActionTitle?: string;
   outcome: PivotOutcome;
+  cautionarySignals?: GoogleCautionarySignal[];
   approved: true;
 };
 
@@ -83,7 +85,7 @@ export function validateDerivedMemoryContext(context: string): string {
   return context.trim();
 }
 
-export function validateMemoryMetadata(input: Pick<SaveGoogleMemoryInput, "selectedPivotKind" | "outcome">): void {
+export function validateMemoryMetadata(input: Pick<SaveGoogleMemoryInput, "selectedPivotKind" | "outcome" | "cautionarySignals">): void {
   if (!PIVOT_LIBRARY.some((pivot) => pivot.kind === input.selectedPivotKind)) {
     throw new Error("Derived memory references a Pivot outside the bounded library.");
   }
@@ -92,6 +94,9 @@ export function validateMemoryMetadata(input: Pick<SaveGoogleMemoryInput, "selec
   }
   if (input.outcome.agencyShift !== undefined && !["more-able", "about-as-able", "less-able"].includes(input.outcome.agencyShift)) {
     throw new Error("Derived memory has an invalid Agency shift.");
+  }
+  if (input.cautionarySignals?.some((signal) => signal !== "blocked")) {
+    throw new Error("Derived memory has an invalid cautionary signal.");
   }
 }
 
@@ -127,6 +132,7 @@ export function createInMemoryGoogleMemoryRepository(
         selectedPivotTitle: input.selectedPivotTitle,
         ...(input.selectedActionTitle ? { selectedActionTitle: input.selectedActionTitle } : {}),
         outcome: input.outcome,
+        ...(input.cautionarySignals ? { cautionarySignals: [...input.cautionarySignals] } : {}),
         approved: true
       };
       memories.set(memoryKey(input.ownerSubject, input.memoryId), memory);
@@ -200,6 +206,7 @@ function summary(memory: StoredMemory): GoogleMemorySummary {
     selectedPivotTitle: memory.selectedPivotTitle,
     ...(memory.selectedActionTitle ? { selectedActionTitle: memory.selectedActionTitle } : {}),
     outcome: memory.outcome,
+    ...(memory.cautionarySignals ? { cautionarySignals: [...memory.cautionarySignals] } : {}),
     approved: true
   };
 }

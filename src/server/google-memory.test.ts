@@ -299,13 +299,18 @@ describe("Google memory boundary", () => {
       command: { type: "select-pivot", pivotKind: "task-first-step" }
     }, { repository: protocolRepository, adaptation });
     expect(select.kind).toBe("state");
+    const blockedStep = await runGoogleProtocolCommand({
+      subject: "person-1", protocolId: "protocol-1", expectedVersion: 2, idempotencyKey: "feedback",
+      command: { type: "record-step-feedback", feedback: { status: "blocked" } }
+    }, { repository: protocolRepository, adaptation });
+    expect(blockedStep).toMatchObject({ kind: "state", state: { miniPlan: { feedback: [{ status: "blocked" }] } } });
     const outcome = await confirmedOutcome({
-      subject: "person-1", protocolId: "protocol-1", expectedVersion: 2, idempotencyKey: "outcome",
+      subject: "person-1", protocolId: "protocol-1", expectedVersion: 3, idempotencyKey: "outcome",
       command: { type: "record-outcome", outcome: { status: "completed", agencyShift: "more-able" } }
     }, { repository: protocolRepository, adaptation });
     expect(outcome).toMatchObject({ kind: "state", state: { persistence: "saved", enrichment: "saved", derivedMemory: { id: "protocol-1" } } });
     await expect(memoryRepository.listMemories("person-1")).resolves.toMatchObject([
-      { id: "protocol-1", outcome: { status: "completed", agencyShift: "more-able" } }
+      { id: "protocol-1", outcome: { status: "completed", agencyShift: "more-able" }, cautionarySignals: ["blocked"] }
     ]);
   });
 
@@ -372,17 +377,18 @@ describe("Google memory boundary", () => {
     expect(result).toMatchObject({ adaptationStatus: "personalized" });
   });
 
-  it("treats a less-able not-a-fit memory as a cautionary signal", async () => {
+  it("treats a blocked mini-plan signal as cautionary memory", async () => {
     const repository = createInMemoryGoogleMemoryRepository();
     await repository.saveDerivedMemory({
       ownerSubject: "person-1",
       protocolId: "cautionary-protocol",
       memoryId: "cautionary-memory",
-      context: "A task-first step was not a fit and left the person less able to continue.",
+      context: "A task-first step was blocked before the person could continue.",
       embedding: vector(1),
       selectedPivotKind: "task-first-step",
       selectedPivotTitle: "Make the next step visible",
-      outcome: { status: "not-a-fit", agencyShift: "less-able" },
+      outcome: { status: "completed", agencyShift: "about-as-able" },
+      cautionarySignals: ["blocked"],
       approved: true
     });
 

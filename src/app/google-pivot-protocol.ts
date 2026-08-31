@@ -125,6 +125,8 @@ export type GoogleDerivedMemory = {
   approved: true;
 };
 
+export type GoogleCautionarySignal = "blocked";
+
 export type GoogleRetrievedMemory = {
   id: string;
   protocolId: string;
@@ -133,6 +135,7 @@ export type GoogleRetrievedMemory = {
   selectedPivotTitle: string;
   selectedActionTitle?: string;
   outcome: PivotOutcome;
+  cautionarySignals?: GoogleCautionarySignal[];
   approved: true;
 };
 
@@ -2241,7 +2244,8 @@ function isStrongHelpfulMemory(memory: GoogleRetrievedMemory): boolean {
 }
 
 function isCautionaryMemory(memory: GoogleRetrievedMemory): boolean {
-  return memory.outcome.status === "not-a-fit" ||
+  return memory.cautionarySignals?.includes("blocked") === true ||
+    memory.outcome.status === "not-a-fit" ||
     memory.outcome.status === "skipped" ||
     memory.outcome.agencyShift === "less-able";
 }
