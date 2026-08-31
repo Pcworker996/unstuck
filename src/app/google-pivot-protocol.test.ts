@@ -48,6 +48,97 @@ describe("Google Pivot Protocol", () => {
     ]);
   });
 
+  it("returns a practical detailed action instead of only a Pivot label", async () => {
+    const result = await runGooglePivotProtocol(
+      {
+        quickDump: "The moving checklist feels too large to begin.",
+        consentGiven: true
+      },
+      {
+        async generate({ situationMap }) {
+          return {
+            situationMap,
+            primaryPivotKind: "task-first-step",
+            alternativePivotKinds: ["grounding", "reaching-out"],
+            whyThisPivot: "A visible first task reduces the size of the decision.",
+            primaryAction: {
+              id: "open-moving-checklist",
+              kind: "task-first-step",
+              title: "Open the moving checklist and circle one deadline",
+              instruction: "Open the checklist and circle one deadline.",
+              goal: "Choose one deadline to make the first task concrete.",
+              steps: [
+                "Open the moving checklist.",
+                "Circle the nearest deadline.",
+                "Put the checklist away when one deadline is marked."
+              ],
+              doneWhen: "One deadline is circled; you do not need to complete the task yet.",
+              estimatedMinutes: 5,
+              fallbackInstruction: "If opening the checklist feels too large, put it on the desk and stop.",
+              whyThisFits: "You named the checklist as the part that is keeping you stuck."
+            }
+          };
+        }
+      }
+    );
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol" || !result.recommendation) return;
+    expect(result.recommendation.primaryAction).toMatchObject({
+      goal: "Choose one deadline to make the first task concrete.",
+      steps: [
+        "Open the moving checklist.",
+        "Circle the nearest deadline.",
+        "Put the checklist away when one deadline is marked."
+      ],
+      doneWhen: "One deadline is circled; you do not need to complete the task yet.",
+      fallbackInstruction: "If opening the checklist feels too large, put it on the desk and stop.",
+      whyThisFits: "You named the checklist as the part that is keeping you stuck."
+    });
+  });
+
+  it.each([
+    { title: "Open the moving checklist", missing: "goal" },
+    { title: "Make a plan", missing: undefined }
+  ])("uses a detailed curated fallback for an invalid action ($title)", async ({ title, missing }) => {
+    const result = await runGooglePivotProtocol(
+      { quickDump: "I am stuck on a normal task.", consentGiven: true },
+      {
+        async generate({ situationMap }) {
+          const action = {
+            id: "invalid-action",
+            kind: "task-first-step",
+            title,
+            instruction: "Do the task.",
+            ...(missing === "goal" ? {} : { goal: "Complete the task." }),
+            steps: ["Do the task."],
+            doneWhen: "The task is done.",
+            estimatedMinutes: 5,
+            fallbackInstruction: "Do less.",
+            whyThisFits: "It is the task."
+          };
+          return {
+            situationMap,
+            primaryPivotKind: "task-first-step",
+            alternativePivotKinds: ["grounding", "reaching-out"],
+            whyThisPivot: "A small action is available.",
+            primaryAction: action
+          };
+        }
+      }
+    );
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol" || !result.recommendation) return;
+    expect(result.fallback).toBe(true);
+    expect(result.recommendation.primaryAction).toMatchObject({
+      goal: expect.any(String),
+      steps: expect.arrayContaining([expect.any(String)]),
+      doneWhen: expect.any(String),
+      whyThisFits: expect.any(String)
+    });
+  });
+
   it("stops before generation for immediate danger", async () => {
     let generated = false;
     const generator: GooglePivotGenerator = {

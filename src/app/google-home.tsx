@@ -450,9 +450,21 @@ function GooglePivotResultView({
               <>
                 <p className="eyebrow">{result.phase === "outcome" ? "Pivot outcome" : result.phase === "selected" ? `Mini-plan step ${result.miniPlan?.stepNumber ?? 1} of ${result.miniPlan?.maxSteps ?? 3}` : "Recommended Pivot"}</p>
                 <h2 id="google-pivot-heading">{action.title}</h2>
-                <p>{action.instruction}</p>
-                <p className="privacy-note">Estimated time: {action.estimatedMinutes} minutes.</p>
-                {result.phase === "selected" ? <p className="privacy-note">If this feels too large: {action.fallbackInstruction}</p> : null}
+                {result.phase === "recommended" ? (
+                  <p className="privacy-note">Choose this Pivot to see the step-by-step action.</p>
+                ) : (
+                  <>
+                    <p>{action.instruction}</p>
+                    <p><strong>Goal:</strong> {action.goal}</p>
+                    <ol>
+                      {action.steps.map((step) => <li key={step}>{step}</li>)}
+                    </ol>
+                    <p><strong>Done when:</strong> {action.doneWhen}</p>
+                    <p className="privacy-note">Estimated time: {action.estimatedMinutes} minutes.</p>
+                    <p className="privacy-note">If this feels too large: {action.fallbackInstruction}</p>
+                    <p className="pivot-explanation"><strong>Why this fits:</strong> {action.whyThisFits}</p>
+                  </>
+                )}
               </>
             );
           })()}
@@ -461,7 +473,16 @@ function GooglePivotResultView({
           {result.adaptationStatus === "unavailable" ? <p className="privacy-note">Personalization is temporarily unavailable; this recommendation uses only the current Situation map.</p> : null}
           <div className="alternatives">
             <h3>Two other options</h3>
-            {recommendation.alternativeActions.map((action) => <p key={action.id}>{action.title}</p>)}
+            {recommendation.alternativeActions.map((action) => (
+              <div className="alternative-option" key={action.id}>
+                <p>{action.title}</p>
+                {result.phase === "recommended" ? (
+                  <button className="quiet-button" onClick={() => void command({ type: "select-pivot", pivotKind: action.kind })} type="button">
+                    Choose this Pivot
+                  </button>
+                ) : null}
+              </div>
+            ))}
           </div>
           {result.phase === "recommended" ? (
             <div className="button-row">

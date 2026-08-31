@@ -1,0 +1,3 @@
+# Use a conversational protocol shell
+
+Unstuck will present its Pivot Protocol as a natural, temporary conversation with an always-available composer, while retaining the versioned structured protocol state as the sole authority. Each Gemini response is a schema-validated conversational turn that can propose visible, reversible updates; the application—not Gemini—continues to own Safety rechecks, memory retrieval and controls, Pivot-kind bounds, confirmation-gated retention, and fallbacks. This deliberately combines a less form-like interaction with the inspectability, safety boundaries, and deterministic test seam of the existing protocol rather than adopting an unbounded chatbot or durable raw transcript.

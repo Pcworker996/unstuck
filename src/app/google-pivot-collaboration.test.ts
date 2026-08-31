@@ -28,8 +28,12 @@ describe("collaborative Google Pivot Protocol", () => {
       kind: "task-first-step" as const,
       title: `Synthetic step ${step}`,
       instruction: `Do the synthetic step ${step} for this situation.`,
+      goal: `Complete the goal for synthetic step ${step}.`,
+      steps: [`Start synthetic step ${step}.`],
+      doneWhen: `Synthetic step ${step} has been attempted.`,
       estimatedMinutes: 5,
-      fallbackInstruction: `Make synthetic step ${step} smaller.`
+      fallbackInstruction: `Make synthetic step ${step} smaller.`,
+      whyThisFits: `The previous feedback supports synthetic step ${step}.`
     });
     const generator: GooglePivotGenerator = {
       async generate({ situationMap, currentAction, stepFeedback }) {

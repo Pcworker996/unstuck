@@ -75,8 +75,12 @@ export type SituationalPivotAction = {
   kind: PivotKind;
   title: string;
   instruction: string;
+  goal: string;
+  steps: string[];
+  doneWhen: string;
   estimatedMinutes: number;
   fallbackInstruction: string;
+  whyThisFits: string;
 };
 
 export type GooglePivotMiniPlan = {
@@ -2032,35 +2036,96 @@ function validatedSituationalAction(value: unknown, pivot: Pivot): SituationalPi
   if (value === undefined) return situationalActionForPivot(pivot);
   if (!isRecord(value) || value.kind !== pivot.kind || typeof value.id !== "string" ||
       typeof value.title !== "string" || typeof value.instruction !== "string" ||
+      typeof value.goal !== "string" || !Array.isArray(value.steps) ||
+      value.steps.length < 1 || value.steps.length > 3 ||
+      !value.steps.every((step) => typeof step === "string") ||
+      typeof value.doneWhen !== "string" ||
       typeof value.estimatedMinutes !== "number" || !Number.isInteger(value.estimatedMinutes) ||
       value.estimatedMinutes < 1 || value.estimatedMinutes > 30 ||
-      typeof value.fallbackInstruction !== "string") {
+      typeof value.fallbackInstruction !== "string" || typeof value.whyThisFits !== "string") {
     throw new Error("Generated situational Pivot action is invalid.");
   }
-  for (const text of [value.title, value.instruction, value.fallbackInstruction]) {
+  if (!isConcreteActionTitle(value.title)) {
+    throw new Error("Generated situational Pivot action title is too vague.");
+  }
+  for (const text of [value.title, value.instruction, value.goal, value.doneWhen, value.fallbackInstruction, value.whyThisFits]) {
     if (!text.trim() || text.length > 600) throw new Error("Generated situational Pivot action text is invalid.");
     validateSafeAgentText(text);
   }
+  if (value.goal.length > 300 || value.doneWhen.length > 300 || value.whyThisFits.length > 300 ||
+      value.steps.some((step) => !step.trim() || step.length > 240)) {
+    throw new Error("Generated situational Pivot action detail is invalid.");
+  }
+  value.steps.forEach(validateSafeAgentText);
   if (value.id.trim().length > 120) throw new Error("Generated situational Pivot action identifier is invalid.");
   return {
     id: value.id.trim(),
     kind: pivot.kind,
     title: value.title.trim(),
     instruction: value.instruction.trim(),
+    goal: value.goal.trim(),
+    steps: value.steps.map((step) => step.trim()),
+    doneWhen: value.doneWhen.trim(),
     estimatedMinutes: value.estimatedMinutes,
-    fallbackInstruction: value.fallbackInstruction.trim()
+    fallbackInstruction: value.fallbackInstruction.trim(),
+    whyThisFits: value.whyThisFits.trim()
   };
 }
 
 export function defaultSituationalActionForPivot(pivot: Pivot): SituationalPivotAction {
-  return {
-    id: `${pivot.id}-situational`,
-    kind: pivot.kind,
-    title: pivot.title,
-    instruction: pivot.instruction,
-    estimatedMinutes: 5,
-    fallbackInstruction: "Make this smaller: spend two minutes preparing the action without requiring yourself to finish it."
+  const defaults: Record<PivotKind, Omit<SituationalPivotAction, "id" | "kind">> = {
+    grounding: {
+      title: "Name five things in this room",
+      instruction: "Look around and name five things you can see.",
+      goal: "Bring attention back to the room around you.",
+      steps: ["Name five things you can see.", "Name four things you can feel.", "Stop after the last item; nothing else is required."],
+      doneWhen: "You have named five visible things and can stop.",
+      estimatedMinutes: 5,
+      fallbackInstruction: "Name one thing you can see, then stop.",
+      whyThisFits: "This is a small, immediate action that does not require solving the whole situation."
+    },
+    "breathing-focus": {
+      title: "Take five slower breaths",
+      instruction: "Breathe in for four counts and out for six counts five times.",
+      goal: "Create a short pause before choosing what to do next.",
+      steps: ["Breathe in gently for four counts.", "Breathe out for six counts.", "Repeat for five breaths, without forcing the pace."],
+      doneWhen: "Five breaths are complete, or you decide to stop sooner.",
+      estimatedMinutes: 5,
+      fallbackInstruction: "Take one comfortable breath and return to the room.",
+      whyThisFits: "A brief pause can make the next choice easier without requiring a decision yet."
+    },
+    "reaching-out": {
+      title: "Send one check-in message",
+      instruction: "Text someone you trust: ‘I am having a hard moment. Can you check in with me later?’",
+      goal: "Make one specific request for human connection.",
+      steps: ["Choose one person you trust.", "Send the suggested check-in message or your own short version.", "Put the phone down after sending it."],
+      doneWhen: "The message is sent; you do not need to explain everything.",
+      estimatedMinutes: 5,
+      fallbackInstruction: "Open the message thread and type ‘Can you check in later?’ without sending it.",
+      whyThisFits: "One clear request keeps reaching out small and leaves the other person room to respond."
+    },
+    "basic-needs-reset": {
+      title: "Get water or a few bites",
+      instruction: "Get a glass of water, take a few bites, or move somewhere a little more comfortable.",
+      goal: "Meet one immediate physical need before tackling the situation.",
+      steps: ["Choose water, a few bites, or a more comfortable place.", "Move only far enough to get that one thing.", "Stop once the basic reset is available."],
+      doneWhen: "You have water, food, or a more comfortable place in reach.",
+      estimatedMinutes: 5,
+      fallbackInstruction: "Take one sip of water or change one uncomfortable thing around you.",
+      whyThisFits: "A basic reset can remove one immediate obstacle without asking you to solve the larger problem."
+    },
+    "task-first-step": {
+      title: "Write one task under ten minutes",
+      instruction: "Write the smallest task that takes less than ten minutes, then do only that task.",
+      goal: "Turn an overwhelming task into one visible action.",
+      steps: ["Write the larger task at the top of a page.", "Under it, write one action that takes less than ten minutes.", "Stop after writing it or do only that action."],
+      doneWhen: "One task under ten minutes is written down; completion is optional.",
+      estimatedMinutes: 5,
+      fallbackInstruction: "Write only the name of the larger task and stop.",
+      whyThisFits: "A visible, time-bounded first step reduces the size of an ambiguous task."
+    }
   };
+  return { id: `${pivot.id}-situational`, kind: pivot.kind, ...defaults[pivot.kind] };
 }
 
 const situationalActionForPivot = defaultSituationalActionForPivot;
@@ -2079,6 +2144,12 @@ const defaultGenerator: GooglePivotGenerator = {
     return fallbackOutput(quickDump, situationMap);
   }
 };
+
+function isConcreteActionTitle(title: string): boolean {
+  const normalized = title.trim().toLowerCase().replace(/[.!?]+$/, "");
+  if (normalized.split(/\s+/).length < 2) return false;
+  return !/^(make a plan|work on it|take the next step|do something|deal with it|feel better|focus on yourself)$/.test(normalized);
+}
 
 function isProvenance(value: unknown): value is Provenance {
   return value === "person" || value === "artifact" || value === "guide";
