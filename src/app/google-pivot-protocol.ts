@@ -543,7 +543,15 @@ export async function runGooglePivotProtocol(
         generator,
         adaptation
       })
-    : { output, status: adaptation ? "unavailable" as const : "not-requested" as const, explanations: [], preferenceIds: [], memories: [], retrievalAttempted: false, retrievalMode: adaptation ? "unavailable" as const : "not-requested" as const };
+    : {
+        output,
+        status: adaptation && !pendingDerivedContext ? "unavailable" as const : "not-requested" as const,
+        explanations: [],
+        preferenceIds: [],
+        memories: [],
+        retrievalAttempted: false,
+        retrievalMode: adaptation && !pendingDerivedContext ? "unavailable" as const : "not-requested" as const
+      };
   if (adapted.output !== output) {
     output = adapted.output;
     activity.push({ kind: "generation", message: "The Situation map and recommendation adapted from approved context." });
@@ -2199,7 +2207,7 @@ function fallbackAdaptation(
   preferences: readonly GoogleGuidancePreference[]
 ): GooglePivotGeneratorOutput {
   const helpfulMemory = memories.find(isStrongHelpfulMemory);
-  const cautionaryKinds = new Set(memories.filter(isCautionaryMemory).map((memory) => memory.selectedPivotKind));
+  const cautionaryKinds = cautionaryMemoryKinds(memories);
   const avoidBreathing = preferences.some((preference) => /avoid.*breath|not.*breath/i.test(preference.text));
   const preferred = helpfulMemory
     ? requirePivot(helpfulMemory.selectedPivotKind)
@@ -2207,7 +2215,10 @@ function fallbackAdaptation(
   const primary = !(avoidBreathing && preferred.kind === "breathing-focus") && !cautionaryKinds.has(preferred.kind)
     ? preferred
     : PIVOT_LIBRARY.find((pivot) => !cautionaryKinds.has(pivot.kind) && !(avoidBreathing && pivot.kind === "breathing-focus")) ?? preferred;
-  const alternatives = PIVOT_LIBRARY.filter((pivot) => pivot.kind !== primary.kind).slice(0, 2);
+  const alternatives = [
+    ...PIVOT_LIBRARY.filter((pivot) => pivot.kind !== primary.kind && !cautionaryKinds.has(pivot.kind)),
+    ...PIVOT_LIBRARY.filter((pivot) => pivot.kind !== primary.kind && cautionaryKinds.has(pivot.kind))
+  ].slice(0, 2);
   const cautionaryPrimary = cautionaryKinds.has(primary.kind);
   const primaryAction = situationalActionForPivot(primary);
   return {
@@ -2215,6 +2226,9 @@ function fallbackAdaptation(
     primaryPivotKind: primary.kind,
     alternativePivotKinds: alternatives.map((pivot) => pivot.kind),
     ...(cautionaryPrimary ? { primaryAction: smallerActionFor(primaryAction) } : {}),
+    alternativeActions: alternatives.map((pivot) => cautionaryKinds.has(pivot.kind)
+      ? smallerActionFor(situationalActionForPivot(pivot))
+      : situationalActionForPivot(pivot)),
     whyThisPivot: helpfulMemory
       ? `A completed saved Check-in where you felt more able used “${helpfulMemory.selectedPivotTitle}”; this is one option to consider.`
       : memories.length > 0
@@ -2231,12 +2245,27 @@ function applyOutcomeSignals(
   memories: readonly GoogleRetrievedMemory[],
   preferences: readonly GoogleGuidancePreference[]
 ): GooglePivotGeneratorOutput {
-  const cautionaryKinds = new Set(memories.filter(isCautionaryMemory).map((memory) => memory.selectedPivotKind));
+  const cautionaryKinds = cautionaryMemoryKinds(memories);
   const primary = findPivot(output.primaryPivotKind);
-  if (!primary || !cautionaryKinds.has(primary.kind) || memories.some((memory) => isStrongHelpfulMemory(memory) && memory.selectedPivotKind === primary.kind)) {
+  const relatedKinds = [output.primaryPivotKind, ...output.alternativePivotKinds]
+    .flatMap((kind) => {
+      const pivot = findPivot(kind);
+      return pivot ? [pivot.kind] : [];
+    });
+  if (!primary || !relatedKinds.some((kind) => cautionaryKinds.has(kind))) {
     return output;
   }
   return fallbackAdaptation(situationMap, memories, preferences);
+}
+
+function cautionaryMemoryKinds(memories: readonly GoogleRetrievedMemory[]): Set<GoogleRetrievedMemory["selectedPivotKind"]> {
+  const helpfulKinds = new Set(memories.filter(isStrongHelpfulMemory).map((memory) => memory.selectedPivotKind));
+  return new Set(
+    memories
+      .filter(isCautionaryMemory)
+      .map((memory) => memory.selectedPivotKind)
+      .filter((kind) => !helpfulKinds.has(kind))
+  );
 }
 
 function isStrongHelpfulMemory(memory: GoogleRetrievedMemory): boolean {

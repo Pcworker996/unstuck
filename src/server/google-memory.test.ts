@@ -338,6 +338,8 @@ describe("Google memory boundary", () => {
     expect(started.kind).toBe("pivot-protocol");
     if (started.kind !== "pivot-protocol") return;
     expect(started.phase).toBe("clarifying");
+    expect(started.adaptationStatus).toBe("not-requested");
+    expect(started.fallback).toBe(false);
     expect(started.retrievalAttempted).toBe(false);
     expect(retrievals).toBe(0);
     const answered = await runGooglePivotCommand(started, {
@@ -356,7 +358,7 @@ describe("Google memory boundary", () => {
       await repository.saveDerivedMemory({
         ownerSubject: "person-1", protocolId: memoryId, memoryId, context: memoryId,
         embedding: vector(1), selectedPivotKind: "task-first-step", selectedPivotTitle: "Make the next step visible",
-        outcome: { status }, approved: true
+        outcome: status === "completed" ? { status, agencyShift: "more-able" } : { status }, approved: true
       });
     }
     let seenStatuses: string[] = [];
@@ -375,6 +377,7 @@ describe("Google memory boundary", () => {
     });
     expect(seenStatuses).toEqual(["completed", "not-a-fit"]);
     expect(result).toMatchObject({ adaptationStatus: "personalized" });
+    if (result.kind === "pivot-protocol") expect(result.recommendation?.primary.kind).toBe("task-first-step");
   });
 
   it("treats a blocked mini-plan signal as cautionary memory", async () => {
@@ -399,7 +402,10 @@ describe("Google memory boundary", () => {
       async generate({ situationMap }) {
         return { situationMap, primaryPivotKind: "grounding", alternativePivotKinds: ["breathing-focus", "reaching-out"], whyThisPivot: "A bounded option." };
       },
-      async prepareMemory() { return "A current derived context."; }
+      async prepareMemory() { return "A current derived context."; },
+      async adapt({ situationMap }) {
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "The prior action seems relevant." };
+      }
     }, {
       ownerSubject: "person-1",
       embed: async () => vector(1),
