@@ -577,9 +577,14 @@ describe("Google Protocol", () => {
   it("does not expose Derived memory when embedding fails during outcome enrichment", async () => {
     const repository = createInMemoryGoogleProtocolRepository();
     const memoryRepository = createInMemoryGoogleMemoryRepository();
+    let embeddings = 0;
     const adaptation = {
       memoryRepository,
-      async embed() { throw new Error("embedding timeout"); }
+      async embed() {
+        embeddings += 1;
+        if (embeddings === 1) return new Array(768).fill(0);
+        throw new Error("embedding timeout");
+      }
     };
     await startGoogleProtocol(
       { subject: "firebase-user-1" },

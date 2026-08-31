@@ -406,7 +406,6 @@ export async function runGooglePivotProtocol(
   let situationMap = createSituationMap(quickDump);
   activity.push({ kind: "map-created", message: "Situation map created." });
   let fallback = false;
-  let generationFallback = false;
   let artifacts: GoogleArtifactProcessingState[] = [];
   let artifactBytes = 0;
 
@@ -491,7 +490,6 @@ export async function runGooglePivotProtocol(
     if (!generator.repair) {
       output = fallbackOutput(quickDump, situationMap);
       fallback = true;
-      generationFallback = true;
     } else {
       try {
         const repairedOutput = await generator.repair({
@@ -504,7 +502,6 @@ export async function runGooglePivotProtocol(
       } catch {
         output = fallbackOutput(quickDump, situationMap);
         fallback = true;
-        generationFallback = true;
       }
     }
   }
@@ -520,7 +517,7 @@ export async function runGooglePivotProtocol(
 
   // A curated fallback is safe to continue with, but it is not a valid
   // generated Check-in to retain as personal history or Derived memory.
-  let saveRequested = (input.saveRequested ?? false) && !generationFallback;
+  let saveRequested = (input.saveRequested ?? false) && !fallback;
   let pendingDerivedContext: string | undefined;
   if (saveRequested || adaptation) {
     try {
@@ -554,6 +551,11 @@ export async function runGooglePivotProtocol(
   if (adapted.status === "unavailable") {
     fallback = true;
     activity.push({ kind: "fallback", message: "Personalization is unavailable; the accepted Situation map remains usable." });
+  }
+  if (fallback && saveRequested) {
+    saveRequested = false;
+    pendingDerivedContext = undefined;
+    activity.push({ kind: "fallback", message: "This fallback Check-in will not be retained as personal history or Derived memory." });
   }
   return {
     kind: "pivot-protocol",
@@ -854,7 +856,7 @@ async function runGooglePivotCommandInternal(
 }
 
 function normalizeFallbackSavePolicy(result: GooglePivotCommandResult): GooglePivotCommandResult {
-  if (result.kind !== "ok" || !result.state.saveRequested || !hasNonPersistableFallback(result.state)) return result;
+  if (result.kind !== "ok" || !result.state.fallback || !result.state.saveRequested) return result;
   return {
     ...result,
     state: {
@@ -866,10 +868,6 @@ function normalizeFallbackSavePolicy(result: GooglePivotCommandResult): GooglePi
       derivedMemory: undefined
     }
   };
-}
-
-function hasNonPersistableFallback(state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>): boolean {
-  return state.activity.some((event) => event.kind === "fallback" && event.message.includes("Curated fallback"));
 }
 
 async function recordOutcome(

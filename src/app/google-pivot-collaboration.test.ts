@@ -409,9 +409,9 @@ describe("collaborative Google Pivot Protocol", () => {
 
     expect(started).toMatchObject({
       kind: "ok",
-      state: { fallback: true, saveRequested: true, persistence: "pending" }
+      state: { fallback: true, saveRequested: false, persistence: "unsaved" }
     });
-    if (started.kind === "ok") expect(started.state.pendingDerivedContext).toBeDefined();
+    if (started.kind === "ok") expect(started.state.pendingDerivedContext).toBeUndefined();
   });
 
   it("keeps unresolved contradictions while a correction regenerates the map", async () => {
