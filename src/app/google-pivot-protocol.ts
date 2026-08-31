@@ -531,7 +531,7 @@ export async function runGooglePivotProtocol(
     }
   }
 
-  const adapted = adaptation && pendingDerivedContext
+  const adapted = adaptation && pendingDerivedContext && !output.clarificationQuestion
     ? await adaptOutput({
       quickDump,
       situationMap: output.situationMap,
@@ -1962,7 +1962,7 @@ async function generateAdaptedOutput(
   retrievalMode: "not-requested" | "tool" | "server-fallback" | "reused" | "direct" | "unavailable";
 }> {
   const generated = await generateValidatedOutput(quickDump, situationMap, generator, clarificationAnswers);
-  if (!adaptation) {
+  if (!adaptation || generated.output.clarificationQuestion) {
     return { ...generated, status: "not-requested", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: false, retrievalMode: "not-requested" };
   }
 
@@ -2106,6 +2106,7 @@ async function adaptOutput({
         situationMap
       );
     }
+    output = applyOutcomeSignals(output, situationMap, resolvedMemories, guidancePreferences);
     const preservedMap = preserveAcceptedMapItems(output.situationMap, situationMap, []);
     return {
       output: {
@@ -2194,20 +2195,55 @@ function fallbackAdaptation(
   memories: readonly GoogleRetrievedMemory[],
   preferences: readonly GoogleGuidancePreference[]
 ): GooglePivotGeneratorOutput {
-  const rememberedPivot = memories[0]?.selectedPivotKind;
+  const helpfulMemory = memories.find(isStrongHelpfulMemory);
+  const cautionaryKinds = new Set(memories.filter(isCautionaryMemory).map((memory) => memory.selectedPivotKind));
   const avoidBreathing = preferences.some((preference) => /avoid.*breath|not.*breath/i.test(preference.text));
-  const primary = rememberedPivot && !(avoidBreathing && rememberedPivot === "breathing-focus")
-    ? requirePivot(rememberedPivot)
+  const preferred = helpfulMemory
+    ? requirePivot(helpfulMemory.selectedPivotKind)
     : preferredPivot(situationMap.shared.map((item) => item.text).join(" "));
+  const primary = !(avoidBreathing && preferred.kind === "breathing-focus") && !cautionaryKinds.has(preferred.kind)
+    ? preferred
+    : PIVOT_LIBRARY.find((pivot) => !cautionaryKinds.has(pivot.kind) && !(avoidBreathing && pivot.kind === "breathing-focus")) ?? preferred;
   const alternatives = PIVOT_LIBRARY.filter((pivot) => pivot.kind !== primary.kind).slice(0, 2);
+  const cautionaryPrimary = cautionaryKinds.has(primary.kind);
+  const primaryAction = situationalActionForPivot(primary);
   return {
     situationMap,
     primaryPivotKind: primary.kind,
     alternativePivotKinds: alternatives.map((pivot) => pivot.kind),
-    whyThisPivot: memories.length > 0
-      ? `A similar saved Check-in used “${memories[0].selectedPivotTitle}” and was marked ${memories[0].outcome.status}.`
+    ...(cautionaryPrimary ? { primaryAction: smallerActionFor(primaryAction) } : {}),
+    whyThisPivot: helpfulMemory
+      ? `A completed saved Check-in where you felt more able used “${helpfulMemory.selectedPivotTitle}”; this is one option to consider.`
+      : memories.length > 0
+        ? cautionaryPrimary
+          ? "A prior saved Check-in raised a caution, so this option starts with one smaller step."
+          : `A similar saved Check-in was marked ${memories[0].outcome.status}; this is one option to consider.`
       : "This recommendation follows your explicit Guidance preference.",
   };
+}
+
+function applyOutcomeSignals(
+  output: GooglePivotGeneratorOutput,
+  situationMap: SituationMap,
+  memories: readonly GoogleRetrievedMemory[],
+  preferences: readonly GoogleGuidancePreference[]
+): GooglePivotGeneratorOutput {
+  const cautionaryKinds = new Set(memories.filter(isCautionaryMemory).map((memory) => memory.selectedPivotKind));
+  const primary = findPivot(output.primaryPivotKind);
+  if (!primary || !cautionaryKinds.has(primary.kind) || memories.some((memory) => isStrongHelpfulMemory(memory) && memory.selectedPivotKind === primary.kind)) {
+    return output;
+  }
+  return fallbackAdaptation(situationMap, memories, preferences);
+}
+
+function isStrongHelpfulMemory(memory: GoogleRetrievedMemory): boolean {
+  return memory.outcome.status === "completed" && memory.outcome.agencyShift === "more-able";
+}
+
+function isCautionaryMemory(memory: GoogleRetrievedMemory): boolean {
+  return memory.outcome.status === "not-a-fit" ||
+    memory.outcome.status === "skipped" ||
+    memory.outcome.agencyShift === "less-able";
 }
 
 function addPriorPatternItems(

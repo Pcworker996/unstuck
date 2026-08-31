@@ -332,10 +332,16 @@ describe("Google memory boundary", () => {
     const started = await runGooglePivotProtocol({ quickDump: "A hard moment.", consentGiven: true }, generator, adaptation);
     expect(started.kind).toBe("pivot-protocol");
     if (started.kind !== "pivot-protocol") return;
+    expect(started.phase).toBe("clarifying");
+    expect(started.retrievalAttempted).toBe(false);
+    expect(retrievals).toBe(0);
     const answered = await runGooglePivotCommand(started, {
       type: "answer-clarification", questionId: "q1", answer: "A small next step."
     }, generator, adaptation);
     expect(answered.kind).toBe("ok");
+    if (answered.kind !== "ok") return;
+    expect(answered.state.phase).toBe("recommended");
+    expect(answered.state.retrievalAttempted).toBe(true);
     expect(retrievals).toBe(1);
   });
 
@@ -364,6 +370,75 @@ describe("Google memory boundary", () => {
     });
     expect(seenStatuses).toEqual(["completed", "not-a-fit"]);
     expect(result).toMatchObject({ adaptationStatus: "personalized" });
+  });
+
+  it("treats a less-able not-a-fit memory as a cautionary signal", async () => {
+    const repository = createInMemoryGoogleMemoryRepository();
+    await repository.saveDerivedMemory({
+      ownerSubject: "person-1",
+      protocolId: "cautionary-protocol",
+      memoryId: "cautionary-memory",
+      context: "A task-first step was not a fit and left the person less able to continue.",
+      embedding: vector(1),
+      selectedPivotKind: "task-first-step",
+      selectedPivotTitle: "Make the next step visible",
+      outcome: { status: "not-a-fit", agencyShift: "less-able" },
+      approved: true
+    });
+
+    const result = await runGooglePivotProtocol({
+      quickDump: "I am stuck on a work task.",
+      consentGiven: true
+    }, {
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "grounding", alternativePivotKinds: ["breathing-focus", "reaching-out"], whyThisPivot: "A bounded option." };
+      },
+      async prepareMemory() { return "A current derived context."; }
+    }, {
+      ownerSubject: "person-1",
+      embed: async () => vector(1),
+      retrieveSimilarMemories: (input) => repository.retrieveSimilarMemories(input),
+      listGuidancePreferences: async () => []
+    });
+
+    expect(result).toMatchObject({ kind: "pivot-protocol", adaptationStatus: "personalized" });
+    if (result.kind !== "pivot-protocol" || !result.recommendation) return;
+    expect(result.recommendation.primary.kind).not.toBe("task-first-step");
+    expect(result.memoryExplanations).toMatchObject([{ memoryId: "cautionary-memory" }]);
+  });
+
+  it("lets a completed more-able memory strengthen a relevant Pivot", async () => {
+    const repository = createInMemoryGoogleMemoryRepository();
+    await repository.saveDerivedMemory({
+      ownerSubject: "person-1",
+      protocolId: "helpful-protocol",
+      memoryId: "helpful-memory",
+      context: "Reaching out helped and left the person more able to continue.",
+      embedding: vector(1),
+      selectedPivotKind: "reaching-out",
+      selectedPivotTitle: "Send one specific message",
+      outcome: { status: "completed", agencyShift: "more-able" },
+      approved: true
+    });
+
+    const result = await runGooglePivotProtocol({
+      quickDump: "I am overwhelmed and need a way to continue.",
+      consentGiven: true
+    }, {
+      async generate({ situationMap }) {
+        return { situationMap, primaryPivotKind: "grounding", alternativePivotKinds: ["breathing-focus", "task-first-step"], whyThisPivot: "A bounded option." };
+      },
+      async prepareMemory() { return "A current derived context."; }
+    }, {
+      ownerSubject: "person-1",
+      embed: async () => vector(1),
+      retrieveSimilarMemories: (input) => repository.retrieveSimilarMemories(input),
+      listGuidancePreferences: async () => []
+    });
+
+    expect(result).toMatchObject({ kind: "pivot-protocol", adaptationStatus: "personalized" });
+    if (result.kind !== "pivot-protocol" || !result.recommendation) return;
+    expect(result.recommendation.primary.kind).toBe("reaching-out");
   });
 
   it("preserves the current map and discloses retrieval degradation", async () => {
