@@ -329,6 +329,40 @@ describe("Google Pivot Protocol", () => {
     expect(result.activity.at(-1)?.kind).toBe("fallback");
   });
 
+  it("disables saving when generation and bounded repair both fail", async () => {
+    let prepared = false;
+    const result = await runGooglePivotProtocol(
+      {
+        quickDump: "I am overwhelmed by a work task.",
+        consentGiven: true,
+        saveRequested: true
+      },
+      {
+        async generate() {
+          throw new Error("generation unavailable");
+        },
+        async repair() {
+          throw new Error("repair unavailable");
+        },
+        async prepareMemory() {
+          prepared = true;
+          return "This context must not be prepared for an invalid generated run.";
+        }
+      }
+    );
+
+    expect(result).toMatchObject({
+      kind: "pivot-protocol",
+      fallback: true,
+      saveRequested: false,
+      persistence: "unsaved",
+      enrichment: "not-requested"
+    });
+    if (result.kind !== "pivot-protocol") return;
+    expect(prepared).toBe(false);
+    expect(result.pendingDerivedContext).toBeUndefined();
+  });
+
   it("keeps the no-image path sufficient and reports that no image was provided", async () => {
     const result = await runGooglePivotProtocol({
       quickDump: "I am stuck on a normal household task.",

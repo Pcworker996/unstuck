@@ -515,7 +515,9 @@ export async function runGooglePivotProtocol(
     activity.push({ kind: "clarification-question", message: "One clarification question is ready." });
   }
 
-  let saveRequested = input.saveRequested ?? false;
+  // A curated fallback is safe to continue with, but it is not a valid
+  // generated Check-in to retain as personal history or Derived memory.
+  let saveRequested = (input.saveRequested ?? false) && !fallback;
   let pendingDerivedContext: string | undefined;
   if (saveRequested || adaptation) {
     try {
