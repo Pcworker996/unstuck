@@ -5,7 +5,7 @@ import { createFirestoreGoogleProtocolRepository } from "./firestore-google-prot
 
 describe("Firestore Google Protocol repository", () => {
   it("stores and reads protocols only through the authenticated owner's path", async () => {
-    const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
+    const repository = createTestRepository();
 
     await repository.create({
       id: "protocol-1",
@@ -23,7 +23,7 @@ describe("Firestore Google Protocol repository", () => {
   });
 
   it("updates only at the expected version and records idempotency", async () => {
-    const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
+    const repository = createTestRepository();
     await repository.create({
       id: "protocol-1",
       ownerSubject: "firebase-user-1",
@@ -60,7 +60,7 @@ describe("Firestore Google Protocol repository", () => {
   });
 
   it("removes undefined fields before persisting a protocol state", async () => {
-    const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
+    const repository = createTestRepository();
     await repository.create({
       id: "protocol-1",
       ownerSubject: "firebase-user-1",
@@ -86,7 +86,7 @@ describe("Firestore Google Protocol repository", () => {
   });
 
   it("keeps unsaved terminal receipts opaque while retaining idempotent replay", async () => {
-    const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
+    const repository = createTestRepository();
     await repository.create({
       id: "protocol-1",
       ownerSubject: "firebase-user-1",
@@ -127,7 +127,7 @@ describe("Firestore Google Protocol repository", () => {
   });
 
   it("lists saved states only within the authenticated owner's collection", async () => {
-    const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
+    const repository = createTestRepository();
     await repository.create({ id: "saved-1", ownerSubject: "firebase-user-1", version: 1, createdAt: "2026-08-26T12:00:00.000Z" });
     await repository.create({ id: "saved-2", ownerSubject: "firebase-user-2", version: 1, createdAt: "2026-08-26T12:00:00.000Z" });
     await repository.saveState({
@@ -147,6 +147,15 @@ describe("Firestore Google Protocol repository", () => {
     await expect(repository.delete({ protocolId: "saved-1", ownerSubject: "firebase-user-1" })).resolves.toBe(true);
   });
 });
+
+const TEST_DELETE_SENTINEL = Symbol("firestore-delete");
+
+function createTestRepository() {
+  return createFirestoreGoogleProtocolRepository(
+    new FakeFirestore() as unknown as Firestore,
+    { delete: () => TEST_DELETE_SENTINEL }
+  );
+}
 
 class FakeFirestore {
   private readonly documents = new Map<string, Record<string, unknown>>();
@@ -226,5 +235,5 @@ class FakeDocument {
 }
 
 function isFirestoreDeleteSentinel(value: unknown): boolean {
-  return typeof value === "object" && value !== null && value.constructor.name === "DeleteTransform";
+  return value === TEST_DELETE_SENTINEL;
 }

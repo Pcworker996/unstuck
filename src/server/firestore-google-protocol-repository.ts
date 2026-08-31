@@ -6,9 +6,11 @@ import { isGoogleProtocolExpired, isTerminalProtocolState, isUnsavedTerminalStat
 
 const ACCOUNTS_COLLECTION = "personalAccounts";
 const PROTOCOLS_COLLECTION = "protocols";
+type FirestoreFieldOperations = { delete: () => unknown };
 
 export function createFirestoreGoogleProtocolRepository(
-  firestore: Firestore
+  firestore: Firestore,
+  fieldOperations: FirestoreFieldOperations = FieldValue
 ): GoogleProtocolRepository {
   return {
     async create(protocol) {
@@ -146,9 +148,9 @@ export function createFirestoreGoogleProtocolRepository(
         transaction.set(reference, {
           version: nextVersion,
           ...(isUnsavedTerminalState(state)
-            ? { pivotState: FieldValue.delete() }
+            ? { pivotState: fieldOperations.delete() }
             : { pivotState: persistedState }),
-          ...(shouldClearUnsavedExpiry(state) ? { expiresAt: FieldValue.delete() } : {}),
+          ...(shouldClearUnsavedExpiry(state) ? { expiresAt: fieldOperations.delete() } : {}),
           idempotency: isTerminalProtocolState(state)
             ? { [idempotencyKey]: idempotencyRecord }
             : { ...(value.idempotency ?? {}), [idempotencyKey]: idempotencyRecord }
