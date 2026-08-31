@@ -572,15 +572,26 @@ describe("Google Pivot Protocol", () => {
     expect(started.kind).toBe("pivot-protocol");
     if (started.kind !== "pivot-protocol") return;
 
-    const removed = await runGooglePivotCommand(started, {
+    const corrected = await runGooglePivotCommand(started, {
+      type: "correct-map",
+      section: "artifactClaims",
+      itemId: "artifact-image-1",
+      text: "The checklist has one unchecked item."
+    }, generator);
+    expect(corrected.kind).toBe("ok");
+    if (corrected.kind !== "ok") return;
+    expect(corrected.state.revisions).toHaveLength(1);
+
+    const removed = await runGooglePivotCommand(corrected.state, {
       type: "remove-artifact",
       artifactId: "artifact-image-1"
     }, generator);
 
     expect(removed.kind).toBe("ok");
     if (removed.kind !== "ok") return;
-    expect(generationCount).toBe(2);
+    expect(generationCount).toBe(3);
     expect(removed.state.situationMap.artifactClaims).toEqual([]);
+    expect(removed.state.revisions).toEqual([]);
     expect(removed.state.artifacts).toEqual([expect.objectContaining({
       artifactId: "artifact-image-1",
       status: "removed",

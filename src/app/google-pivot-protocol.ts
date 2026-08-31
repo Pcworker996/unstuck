@@ -452,15 +452,12 @@ export async function runGooglePivotProtocol(
       { kind: "artifact-safety-completed", message: "The extracted image content passed the second Safety gate." },
       { kind: "artifact-accepted", message: "The image claims were added to the Situation map as artifact claims." }
     );
-    artifacts = [{
-      artifactId: "artifact-image-1",
-      status: "accepted",
-      mimeType: imageReview.mimeType,
-      byteLength: input.image?.bytes.length ?? 0,
-      claimCount: imageReview.claims.length,
-      claimIds: imageClaimIds,
-      message: "The image was reviewed and its claims were added as artifact claims."
-    }];
+    artifacts = [acceptedImageArtifactState(
+      "artifact-image-1",
+      imageReview.mimeType,
+      input.image?.bytes.length ?? 0,
+      imageClaimIds
+    )];
     artifactBytes = input.image?.bytes.length ?? 0;
   }
 
@@ -1048,15 +1045,7 @@ async function addImageToProtocol(
         claimCount: review.claims.length,
         message: "The image was reviewed and its claims were added as artifact claims."
         },
-        artifacts: [...(current.artifacts ?? []), {
-          artifactId,
-          status: "accepted",
-          mimeType: review.mimeType,
-          byteLength: image.bytes.length,
-          claimCount: review.claims.length,
-          claimIds: imageClaimIds,
-          message: "The image was reviewed and its claims were added as artifact claims."
-        }],
+        artifacts: [...(current.artifacts ?? []), acceptedImageArtifactState(artifactId, review.mimeType, image.bytes.length, imageClaimIds)],
         artifactBytes: (current.artifactBytes ?? 0) + image.bytes.length,
       memoryExplanations: generation.explanations,
       retrievedMemories: generation.memories,
@@ -1073,6 +1062,23 @@ async function addImageToProtocol(
         ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted Situation map." }] : [])
       ]
     }
+  };
+}
+
+function acceptedImageArtifactState(
+  artifactId: string,
+  mimeType: string,
+  byteLength: number,
+  claimIds: string[]
+): GoogleArtifactProcessingState {
+  return {
+    artifactId,
+    status: "accepted",
+    mimeType,
+    byteLength,
+    claimCount: claimIds.length,
+    claimIds,
+    message: "The image was reviewed and its claims were added as artifact claims."
   };
 }
 
@@ -1102,6 +1108,8 @@ async function removeArtifactFromProtocol(
     current.retrievalAttempted ? current.retrievedMemories : undefined
   );
   const message = "The image and its claims were removed from this Check-in.";
+  const revisions = current.revisions.filter((revision) => !(revision.section === "artifactClaims" && claimIds.has(revision.itemId)));
+  const undoableUpdates = current.undoableUpdates.filter((update) => !update.before.situationMap.artifactClaims.some((claim) => claimIds.has(claim.id)));
   return {
     kind: "ok",
     state: {
@@ -1110,7 +1118,9 @@ async function removeArtifactFromProtocol(
       selectedPivot: undefined,
       selectedAction: undefined,
       outcome: undefined,
-      situationMap: preserveAcceptedMapItems(generation.output.situationMap, situationMap, current.revisions),
+      revisions,
+      undoableUpdates,
+      situationMap: preserveAcceptedMapItems(generation.output.situationMap, situationMap, revisions),
       recommendation: recommendationFromOutput(generation.output),
       imageProcessing: {
         status: "removed",
