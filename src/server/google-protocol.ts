@@ -315,16 +315,19 @@ function currentState(protocol: StoredGoogleProtocol): Extract<GooglePivotResult
 }
 
 function quotaReservation(command: GooglePivotCommand, current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined): { modelUnits: number; artifactUnits: number } {
-  if (command.type === "approve-artifact-claim" || command.type === "select-pivot" || command.type === "dismiss-pivot" || command.type === "shrink-action" || command.type === "undo-update" || command.type === "cancel-confirmation") {
+  if (command.type === "approve-artifact-claim" || command.type === "select-pivot" || command.type === "dismiss-pivot" || command.type === "shrink-action" || command.type === "undo-update" || command.type === "request-discard" || command.type === "cancel-confirmation") {
     return { modelUnits: 0, artifactUnits: 0 };
   }
   if (command.type === "record-outcome") {
     return { modelUnits: current?.saveRequested ? 2 : 0, artifactUnits: 0 };
   }
   if (command.type === "confirm-action") {
-    return current?.pendingConfirmation?.kind === "record-outcome"
-      ? { modelUnits: current.saveRequested ? 2 : 0, artifactUnits: 0 }
-      : { modelUnits: 4, artifactUnits: 0 };
+    if (current?.pendingConfirmation?.kind === "record-outcome") {
+      return { modelUnits: current.saveRequested ? 2 : 0, artifactUnits: 0 };
+    }
+    return current?.pendingConfirmation?.kind === "forget-memory" || current?.pendingConfirmation?.kind === "delete-memory"
+      ? { modelUnits: 4, artifactUnits: 0 }
+      : { modelUnits: 0, artifactUnits: 0 };
   }
   if (command.type === "forget-memory" || command.type === "delete-memory") {
     return { modelUnits: 0, artifactUnits: 0 };

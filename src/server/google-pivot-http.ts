@@ -248,6 +248,7 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
       if (!isPivotStepFeedback(body.feedback)) throw new HttpInputError("The Pivot step feedback is invalid.");
       return { type, feedback: body.feedback };
     case "shrink-action":
+    case "request-discard":
       return { type };
     case "undo-update":
       if (typeof body.updateId !== "string" || !body.updateId.trim()) throw new HttpInputError("A reversible update identifier is required.");

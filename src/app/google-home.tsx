@@ -5,7 +5,7 @@ import type { FormEvent } from "react";
 
 import { getFirebaseGoogleAuthClient } from "../lib/firebase-google-auth";
 import { googleImageBytesToBase64 } from "./google-image-artifact";
-import type { GoogleConversationalTurn, GooglePendingConfirmation, GooglePivotResult, PivotStepFeedback, SituationMap } from "./google-pivot-protocol";
+import type { GoogleConversationalTurn, GooglePendingConfirmation, GooglePivotResult, MapRevision, PivotStepFeedback, SituationMap } from "./google-pivot-protocol";
 
 type Person = {
   id: string;
@@ -82,7 +82,6 @@ export function GoogleHome() {
 
   async function discardProtocol() {
     if (!person || !protocol) return;
-    if (!window.confirm("Discard this Check-in and its temporary conversation?")) return;
     try {
       await deleteGoogleHistory(protocol.id);
       await replaceWithNewProtocol("The incomplete Check-in was discarded.");
@@ -348,6 +347,7 @@ function GooglePivotResultView({
 
   async function command(body: Record<string, unknown>) {
     setError(undefined);
+    const pendingKind = result.pendingConfirmation?.kind;
     const signature = JSON.stringify(body);
     const idempotencyKey = commandKeys.current.get(signature) ?? crypto.randomUUID();
     commandKeys.current.set(signature, idempotencyKey);
@@ -364,6 +364,9 @@ function GooglePivotResultView({
         })
       });
       onResult(next);
+      if (body.type === "confirm-action" && pendingKind === "discard-check-in" && next.kind === "pivot-protocol" && next.phase === "dismissed") {
+        await onDiscard();
+      }
       commandKeys.current.delete(signature);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "The Pivot Protocol is unavailable.");
@@ -391,7 +394,13 @@ function GooglePivotResultView({
   return (
     <>
       <ConversationTimeline turns={result.conversation} undoableUpdates={result.undoableUpdates} onUndo={(updateId) => void command({ type: "undo-update", updateId })} />
-      {result.phase !== "outcome" && result.phase !== "dismissed" ? <ConversationComposer onSubmit={(message) => void command({ type: "add-context", message })} /> : null}
+      {result.phase !== "outcome" && result.phase !== "dismissed" ? (
+        <ConversationComposer
+          onSubmit={(message) => void command({ type: "add-context", message })}
+          correctionItems={mapEditable ? correctionItemsForMap(situationMap) : []}
+          onCorrect={(correction) => void command(correction)}
+        />
+      ) : null}
       {result.artifacts?.length ? (
         <section className="history-card" aria-label="Supporting artifact processing">
           <p className="eyebrow">Supporting artifacts</p>
@@ -403,7 +412,7 @@ function GooglePivotResultView({
         </section>
       ) : null}
       {mapEditable && (result.artifacts?.filter((artifact) => artifact.status === "accepted").length ?? 0) < 5 ? <OptionalArtifactUpload onAdd={(artifacts) => void command({ type: "add-artifacts", artifacts })} /> : null}
-      <details className="situation-map" open={result.phase === "clarifying"}>
+      <details className="situation-map" open>
         <summary>
           <p className="eyebrow">Situation map</p>
           <h2 id="situation-map-heading">What we have so far</h2>
@@ -418,6 +427,7 @@ function GooglePivotResultView({
         <SituationMapSection editable={mapEditable} section="pivotHistory" title="Pivot history" items={situationMap.pivotHistory} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
         <SituationMapSection editable={mapEditable} section="priorPatterns" title="Relevant prior patterns" items={situationMap.priorPatterns} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
       </details>
+      {result.revisions.length ? <RevisionHistory revisions={result.revisions} /> : null}
       {result.phase === "clarifying" && result.clarification ? (
         <section className="pivot-card" aria-labelledby="clarification-heading">
           <p className="eyebrow">One useful question</p>
@@ -513,9 +523,7 @@ function GooglePivotResultView({
             <div className="button-row">
               <button onClick={() => void command({ type: "select-pivot", pivotKind: recommendation.primary.kind })} type="button">Choose this Pivot</button>
               <button className="quiet-button" onClick={() => void command({ type: "regenerate-pivot" })} type="button">Show another</button>
-              <button className="text-button" onClick={() => {
-                if (window.confirm("Dismiss this Pivot recommendation?")) void command({ type: "dismiss-pivot" });
-              }} type="button">Dismiss</button>
+              <button className="text-button" onClick={() => void command({ type: "dismiss-pivot" })} type="button">Dismiss</button>
             </div>
           ) : null}
           {result.phase === "selected" ? (
@@ -547,8 +555,8 @@ function GooglePivotResultView({
         </section>
       ) : null}
       {error ? <p className="form-error" role="alert">{error}</p> : null}
-      {result.phase !== "outcome" ? (
-        <button className="text-button" onClick={() => void onDiscard()} type="button">Discard this Check-in</button>
+      {result.phase !== "outcome" && result.phase !== "dismissed" ? (
+        <button className="text-button" onClick={() => void command({ type: "request-discard" })} type="button">Discard this Check-in</button>
       ) : null}
       <ActivityTrace events={result.activity} />
     </>
@@ -716,20 +724,90 @@ function ConversationTimeline({
   );
 }
 
-function ConversationComposer({ onSubmit }: { onSubmit: (message: string) => void }) {
+type ConversationCorrectionItem = {
+  section: keyof SituationMap;
+  itemId: string;
+  text: string;
+  label: string;
+};
+
+function correctionItemsForMap(situationMap: SituationMap): ConversationCorrectionItem[] {
+  return (Object.keys(situationMap) as Array<keyof SituationMap>).flatMap((section) => situationMap[section].map((item) => ({
+    section,
+    itemId: item.id,
+    text: item.text,
+    label: `${section}: ${item.text}`
+  })));
+}
+
+function ConversationComposer({
+  onSubmit,
+  correctionItems,
+  onCorrect
+}: {
+  onSubmit: (message: string) => void;
+  correctionItems: ConversationCorrectionItem[];
+  onCorrect: (correction: { type: "correct-map"; section: keyof SituationMap; itemId: string; text: string }) => void;
+}) {
   const [message, setMessage] = useState("");
+  const [correctionItemId, setCorrectionItemId] = useState("");
+  const [correctionText, setCorrectionText] = useState("");
+  const selectedCorrection = correctionItems.find((item) => item.itemId === correctionItemId);
   return (
-    <form className="conversation-composer" onSubmit={(event) => {
-      event.preventDefault();
-      const trimmed = message.trim();
-      if (!trimmed) return;
-      onSubmit(trimmed);
-      setMessage("");
-    }}>
-      <label htmlFor="conversation-message">Add context or tell the guide what changed</label>
-      <textarea id="conversation-message" value={message} onChange={(event) => setMessage(event.target.value)} maxLength={10_000} rows={3} placeholder="I want to correct or add…" />
-      <button type="submit">Send to this Check-in</button>
-    </form>
+    <section className="conversation-composer" aria-label="Check-in composer">
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        const trimmed = message.trim();
+        if (!trimmed) return;
+        onSubmit(trimmed);
+        setMessage("");
+      }}>
+        <label htmlFor="conversation-message">Add context or tell the guide what changed</label>
+        <textarea id="conversation-message" value={message} onChange={(event) => setMessage(event.target.value)} maxLength={10_000} rows={3} placeholder="I want to correct or add…" />
+        <button type="submit">Send to this Check-in</button>
+      </form>
+      {correctionItems.length ? (
+        <details className="conversation-composer__correction">
+          <summary>Correct an existing map item</summary>
+          <label htmlFor="conversation-correction-item">Map item to correct</label>
+          <select id="conversation-correction-item" value={correctionItemId} onChange={(event) => {
+            const item = correctionItems.find((candidate) => candidate.itemId === event.target.value);
+            setCorrectionItemId(event.target.value);
+            setCorrectionText(item?.text ?? "");
+          }}>
+            <option value="">Choose a map item</option>
+            {correctionItems.map((item) => <option key={item.itemId} value={item.itemId}>{item.label}</option>)}
+          </select>
+          <label htmlFor="conversation-correction-text">Corrected text</label>
+          <textarea id="conversation-correction-text" value={correctionText} onChange={(event) => setCorrectionText(event.target.value)} maxLength={10_000} rows={3} disabled={!selectedCorrection} />
+          <button type="button" disabled={!selectedCorrection || !correctionText.trim()} onClick={() => {
+            if (!selectedCorrection) return;
+            onCorrect({ type: "correct-map", section: selectedCorrection.section, itemId: selectedCorrection.itemId, text: correctionText });
+            setCorrectionItemId("");
+            setCorrectionText("");
+          }}>Send map correction</button>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
+function RevisionHistory({ revisions }: { revisions: MapRevision[] }) {
+  return (
+    <section className="history-card" aria-label="Situation map revision history">
+      <p className="eyebrow">Map revisions</p>
+      <h2>What changed</h2>
+      <ul>
+        {revisions.map((revision, index) => (
+          <li key={`${revision.section}-${revision.itemId}-${index}`}>
+            <p><strong>{revision.section}</strong> · {revision.itemId}</p>
+            <p><span>{revision.previousProvenance}:</span> {revision.previousText}</p>
+            <p><span>{revision.provenance}:</span> {revision.text}</p>
+            <p className="privacy-note">Corrected by {revision.editedBy}.</p>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

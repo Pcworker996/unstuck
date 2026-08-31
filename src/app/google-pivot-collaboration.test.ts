@@ -792,4 +792,33 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(confirmed).toMatchObject({ kind: "ok", state: { pendingConfirmation: undefined, memoryExplanations: [] } });
     expect(forgetCalls).toBe(1);
   });
+
+  it("requires confirmation before dismissing or discarding the active Check-in", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck on a normal task.",
+      consentGiven: true
+    });
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const dismissal = await runGooglePivotCommand(started.state, { type: "dismiss-pivot" });
+    expect(dismissal).toMatchObject({ kind: "ok", state: { phase: "recommended", pendingConfirmation: { kind: "dismiss-pivot" } } });
+    if (dismissal.kind !== "ok") return;
+    const dismissed = await runGooglePivotCommand(dismissal.state, {
+      type: "confirm-action",
+      confirmationId: dismissal.state.pendingConfirmation?.id ?? "missing"
+    });
+    expect(dismissed).toMatchObject({ kind: "ok", state: { phase: "dismissed", pendingConfirmation: undefined } });
+    if (dismissed.kind !== "ok") return;
+
+    const discard = await runGooglePivotCommand(started.state, { type: "request-discard" });
+    expect(discard).toMatchObject({ kind: "ok", state: { phase: "recommended", pendingConfirmation: { kind: "discard-check-in" } } });
+    if (discard.kind !== "ok") return;
+    const discarded = await runGooglePivotCommand(discard.state, {
+      type: "confirm-action",
+      confirmationId: discard.state.pendingConfirmation?.id ?? "missing"
+    });
+    expect(discarded).toMatchObject({ kind: "ok", state: { phase: "dismissed", pendingConfirmation: undefined, recommendation: undefined } });
+  });
 });

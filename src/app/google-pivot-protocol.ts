@@ -82,7 +82,7 @@ export type GoogleConversationalTurn = {
 
 export type GooglePendingConfirmation = {
   id: string;
-  kind: "record-outcome" | "forget-memory" | "delete-memory";
+  kind: "record-outcome" | "forget-memory" | "delete-memory" | "dismiss-pivot" | "discard-check-in";
   summary: string;
   outcome?: PivotOutcome;
   memoryId?: string;
@@ -603,6 +603,7 @@ export type GooglePivotCommand =
   | { type: "record-step-feedback"; feedback: PivotStepFeedback }
   | { type: "shrink-action" }
   | { type: "undo-update"; updateId: string }
+  | { type: "request-discard" }
   | { type: "confirm-action"; confirmationId: string }
   | { type: "cancel-confirmation"; confirmationId: string }
   | { type: "regenerate-pivot" }
@@ -656,6 +657,10 @@ export async function runGooglePivotCommand(
 
   if (command.type === "add-context") {
     return addContextToProtocol(current, command, generator, adaptation);
+  }
+
+  if (command.type === "request-discard") {
+    return requestDiscardConfirmation(current);
   }
 
   if (command.type === "answer-clarification" || command.type === "skip-clarification") {
@@ -819,24 +824,7 @@ export async function runGooglePivotCommand(
   }
 
   if (command.type === "dismiss-pivot") {
-    const nextState = {
-      ...current,
-      phase: "dismissed" as const,
-      selectedPivot: undefined,
-      activity: [...current.activity, {
-        kind: "pivot-dismissed" as const,
-        message: "The person dismissed the Pivot recommendation."
-      }]
-    };
-    return {
-      kind: "ok",
-      state: appendConversationTurn(
-        nextState,
-        "Dismiss the Pivot recommendation.",
-        guideResponseForState(nextState, "The recommendation was dismissed; the Situation map remains available."),
-        [{ id: `dismissal-${current.conversation.length + 1}`, kind: "recommendation", summary: "Dismissed the bounded recommendation.", undoable: false }]
-      )
-    };
+    return requestDismissalConfirmation(current);
   }
 
   if (current.phase !== "selected" || !current.selectedPivot) {
@@ -1637,6 +1625,72 @@ function requestMemoryConfirmation(
   };
 }
 
+function requestDismissalConfirmation(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
+): GooglePivotCommandResult {
+  if (current.phase !== "recommended" || !current.recommendation) {
+    return { kind: "invalid-command", message: "A recommendation must be available before dismissing this Pivot." };
+  }
+  if (current.pendingConfirmation) {
+    return { kind: "invalid-command", message: "Confirm or cancel the pending action before dismissing this Pivot." };
+  }
+  const confirmation: GooglePendingConfirmation = {
+    id: `confirmation-${current.conversation.length + 1}`,
+    kind: "dismiss-pivot",
+    summary: "Dismiss this Pivot recommendation?"
+  };
+  const nextState = {
+    ...current,
+    pendingConfirmation: confirmation,
+    activity: [...current.activity, {
+      kind: "confirmation-requested" as const,
+      message: "The person was shown a confirmation before dismissing the Pivot recommendation."
+    }]
+  };
+  return {
+    kind: "ok",
+    state: appendConversationTurn(
+      nextState,
+      "Dismiss the Pivot recommendation.",
+      guideResponseForState(nextState, confirmation.summary),
+      [{ id: confirmation.id, kind: "confirmation", summary: confirmation.summary, undoable: false }]
+    )
+  };
+}
+
+function requestDiscardConfirmation(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
+): GooglePivotCommandResult {
+  if (current.phase === "outcome" || current.phase === "dismissed") {
+    return { kind: "invalid-command", message: "This Check-in is no longer available to discard." };
+  }
+  if (current.pendingConfirmation) {
+    return { kind: "invalid-command", message: "Confirm or cancel the pending action before discarding this Check-in." };
+  }
+  const confirmation: GooglePendingConfirmation = {
+    id: `confirmation-${current.conversation.length + 1}`,
+    kind: "discard-check-in",
+    summary: "Discard this Check-in and its temporary conversation?"
+  };
+  const nextState = {
+    ...current,
+    pendingConfirmation: confirmation,
+    activity: [...current.activity, {
+      kind: "confirmation-requested" as const,
+      message: "The person was shown a confirmation before discarding the Check-in."
+    }]
+  };
+  return {
+    kind: "ok",
+    state: appendConversationTurn(
+      nextState,
+      "Discard this Check-in.",
+      guideResponseForState(nextState, confirmation.summary),
+      [{ id: confirmation.id, kind: "confirmation", summary: confirmation.summary, undoable: false }]
+    )
+  };
+}
+
 async function applyMemoryControl(
   current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
   command: Extract<GooglePivotCommand, { type: "exclude-memory" | "forget-memory" | "delete-memory" }>,
@@ -1733,6 +1787,47 @@ async function confirmAction(
       message: "The person explicitly confirmed the pending action."
     }]
   };
+  if (pending.kind === "dismiss-pivot") {
+    const nextState = {
+      ...prepared,
+      phase: "dismissed" as const,
+      selectedPivot: undefined,
+      activity: [...prepared.activity, {
+        kind: "pivot-dismissed" as const,
+        message: "The person explicitly confirmed dismissal of the Pivot recommendation."
+      }]
+    };
+    return {
+      kind: "ok",
+      state: appendConversationTurn(
+        nextState,
+        "Confirm dismissal.",
+        guideResponseForState(nextState, "The recommendation was dismissed; the Situation map remains available."),
+        [{ id: `${pending.id}-confirmed`, kind: "confirmation", summary: "The Pivot recommendation was dismissed after explicit confirmation.", undoable: false }]
+      )
+    };
+  }
+  if (pending.kind === "discard-check-in") {
+    const nextState = {
+      ...prepared,
+      phase: "dismissed" as const,
+      selectedPivot: undefined,
+      recommendation: undefined,
+      activity: [...prepared.activity, {
+        kind: "pivot-dismissed" as const,
+        message: "The person explicitly confirmed discarding this Check-in."
+      }]
+    };
+    return {
+      kind: "ok",
+      state: appendConversationTurn(
+        nextState,
+        "Confirm discarding this Check-in.",
+        guideResponseForState(nextState, "The Check-in is ready to be discarded."),
+        [{ id: `${pending.id}-confirmed`, kind: "confirmation", summary: "The Check-in was approved for discard after explicit confirmation.", undoable: false }]
+      )
+    };
+  }
   if (pending.kind === "forget-memory" || pending.kind === "delete-memory") {
     if (!pending.memoryId || !adaptation) {
       return { kind: "invalid-command", message: "The pending memory action is unavailable." };

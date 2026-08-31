@@ -238,6 +238,23 @@ button:disabled {
   gap: 0.7rem;
 }
 
+.conversation-composer form,
+.conversation-composer__correction {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.conversation-composer__correction {
+  border-top: 1px solid #344137;
+  margin-top: 0.4rem;
+  padding-top: 0.8rem;
+}
+
+.conversation-composer__correction summary {
+  color: #c8ecca;
+  cursor: pointer;
+}
+
 .conversation-composer textarea {
   margin-top: 0.1rem;
 }

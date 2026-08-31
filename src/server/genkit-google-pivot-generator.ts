@@ -60,7 +60,7 @@ const pivotOutputSchema = z.object({
   clarificationQuestion: z.object({ id: z.string(), text: z.string() }).optional(),
   primaryAction: situationalActionSchema,
   alternativeActions: z.array(situationalActionSchema).length(2),
-  guideResponse: guideResponseSchema.optional()
+  guideResponse: guideResponseSchema
 });
 
 const memoryToolOutputSchema = z.array(z.object({
