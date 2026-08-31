@@ -191,6 +191,72 @@ describe("collaborative Google Pivot Protocol", () => {
     });
   });
 
+  it("carries a detailed Gemini-curated reaching-out action into the mini-plan", async () => {
+    const detailedReachingOutAction = {
+      id: "reach-out-with-followup",
+      kind: "reaching-out" as const,
+      title: "Send one check-in message and plan a follow-up",
+      instruction: "Text someone you trust, then plan when to check back in if they do not reply.",
+      goal: "Make one specific request for human connection with a built-in follow-up.",
+      steps: [
+        "Pick one person you trust to reach out to.",
+        "Write one short message naming what you need.",
+        "Send the message.",
+        "Decide when you will follow up if there is no reply.",
+        "Put down your phone until then."
+      ],
+      doneWhen: "The message is sent and a follow-up time is set, or you decide to stop.",
+      estimatedMinutes: 45,
+      fallbackInstruction: "Send one short message and stop there.",
+      whyThisFits: "You said you feel alone and could use one person to check in with."
+    };
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "reaching-out",
+          alternativePivotKinds: ["grounding", "basic-needs-reset"],
+          whyThisPivot: "One specific, bounded connection can ease feeling alone right now.",
+          primaryAction: detailedReachingOutAction
+        };
+      }
+    };
+
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I feel alone tonight and do not know who to talk to.",
+      consentGiven: true
+    }, generator);
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const selected = await runGooglePivotCommand(started.state, {
+      type: "select-pivot",
+      pivotKind: "reaching-out"
+    }, generator);
+    expect(selected).toMatchObject({
+      kind: "ok",
+      state: {
+        fallback: false,
+        miniPlan: {
+          stepNumber: 1,
+          maxSteps: 3,
+          currentAction: {
+            title: "Send one check-in message and plan a follow-up",
+            estimatedMinutes: 45,
+            steps: [
+              "Pick one person you trust to reach out to.",
+              "Write one short message naming what you need.",
+              "Send the message.",
+              "Decide when you will follow up if there is no reply.",
+              "Put down your phone until then."
+            ]
+          }
+        }
+      }
+    });
+  });
+
   it("asks one clarification at a time, allows skips, and caps questions at two", async () => {
     let generation = 0;
     const generator: GooglePivotGenerator = {

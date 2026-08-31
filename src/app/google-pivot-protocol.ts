@@ -3103,9 +3103,14 @@ function isValidPivotStepFeedback(feedback: unknown): feedback is PivotStepFeedb
     (feedback.note === undefined || (typeof feedback.note === "string" && feedback.note.trim().length <= 500));
 }
 
+function situationalActionBounds(kind: PivotKind): { maxSteps: number; maxMinutes: number } {
+  if (kind === "task-first-step") return { maxSteps: 6, maxMinutes: 60 };
+  if (kind === "reaching-out" || kind === "basic-needs-reset") return { maxSteps: 5, maxMinutes: 45 };
+  return { maxSteps: 3, maxMinutes: 30 };
+}
+
 function validatedSituationalAction(value: unknown, pivot: Pivot): SituationalPivotAction {
-  const maxSteps = pivot.kind === "task-first-step" ? 6 : 3;
-  const maxMinutes = pivot.kind === "task-first-step" ? 60 : 30;
+  const { maxSteps, maxMinutes } = situationalActionBounds(pivot.kind);
   if (value === undefined) return situationalActionForPivot(pivot);
   if (!isRecord(value) || value.kind !== pivot.kind || typeof value.id !== "string" ||
       typeof value.title !== "string" || typeof value.instruction !== "string" ||

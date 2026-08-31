@@ -160,6 +160,89 @@ describe("Google Pivot Protocol", () => {
     expect(result.recommendation.primaryAction.steps).toHaveLength(6);
   });
 
+  it("accepts a richer plan for an emotionally supportive Pivot", async () => {
+    const reachingOutAction = {
+      id: "reach-out-with-followup",
+      kind: "reaching-out" as const,
+      title: "Send one check-in message and plan a follow-up",
+      instruction: "Text someone you trust, then plan when to check back in if they do not reply.",
+      goal: "Make one specific request for human connection with a built-in follow-up.",
+      steps: [
+        "Pick one person you trust to reach out to.",
+        "Write one short message naming what you need.",
+        "Send the message.",
+        "Decide when you will follow up if there is no reply.",
+        "Put down your phone until then."
+      ],
+      doneWhen: "The message is sent and a follow-up time is set, or you decide to stop.",
+      estimatedMinutes: 45,
+      fallbackInstruction: "Send one short message and stop there.",
+      whyThisFits: "You said you feel alone and could use one person to check in with."
+    };
+    const result = await runGooglePivotProtocol(
+      {
+        quickDump: "I feel alone tonight and do not know who to talk to.",
+        consentGiven: true
+      },
+      {
+        async generate({ situationMap }) {
+          return {
+            situationMap,
+            primaryPivotKind: "reaching-out",
+            alternativePivotKinds: ["grounding", "basic-needs-reset"],
+            whyThisPivot: "One specific, bounded connection can ease feeling alone right now.",
+            primaryAction: reachingOutAction
+          };
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ kind: "pivot-protocol", fallback: false });
+    if (result.kind !== "pivot-protocol" || !result.recommendation) return;
+    expect(result.recommendation.primaryAction).toMatchObject({
+      estimatedMinutes: 45,
+      steps: expect.arrayContaining(["Decide when you will follow up if there is no reply."])
+    });
+    expect(result.recommendation.primaryAction.steps).toHaveLength(5);
+  });
+
+  it("still falls back to a curated plan when a non-work Pivot action exceeds its bounded limits", async () => {
+    const oversizedAction = {
+      id: "too-big-for-grounding",
+      kind: "grounding" as const,
+      title: "Name six things in this room and then some",
+      instruction: "Look around and name six things you can see.",
+      goal: "Bring attention back to the room around you.",
+      steps: ["one", "two", "three", "four", "five", "six"],
+      doneWhen: "Six things are named.",
+      estimatedMinutes: 46,
+      fallbackInstruction: "Name one thing you can see, then stop.",
+      whyThisFits: "This is a small, immediate action that does not require solving the whole situation."
+    };
+    const result = await runGooglePivotProtocol(
+      {
+        quickDump: "I feel overwhelmed and cannot focus on anything.",
+        consentGiven: true
+      },
+      {
+        async generate({ situationMap }) {
+          return {
+            situationMap,
+            primaryPivotKind: "grounding",
+            alternativePivotKinds: ["breathing-focus", "reaching-out"],
+            whyThisPivot: "Grounding can help right now.",
+            primaryAction: oversizedAction
+          };
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ kind: "pivot-protocol", fallback: true });
+    if (result.kind !== "pivot-protocol" || !result.recommendation) return;
+    expect(result.recommendation.primaryAction.steps.length).toBeLessThanOrEqual(5);
+    expect(result.recommendation.primaryAction.estimatedMinutes).toBeLessThanOrEqual(45);
+  });
+
   it.each([
     { title: "Open the moving checklist", missing: "goal" },
     { title: "Make a plan", missing: undefined },
