@@ -568,7 +568,7 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
       const next = {
         ...protocol,
         version: protocol.version + 1,
-        ...(isUnsavedTerminalState(state) ? { pivotState: undefined } : { pivotState: state }),
+        ...(isUnsavedTerminalState(state) ? {} : { pivotState: state }),
         ...(shouldClearUnsavedExpiry(state) ? { expiresAt: undefined } : {}),
         idempotency: isTerminalProtocolState(state)
           ? { [idempotencyKey]: { version: protocol.version + 1, state, fingerprint } }
@@ -577,6 +577,7 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
               [idempotencyKey]: { version: protocol.version + 1, state, fingerprint }
             }
       };
+      if (isUnsavedTerminalState(state)) delete next.pivotState;
       protocols.set(protocolId, next);
       return { kind: "saved", protocol: visibleProtocol(next) };
     }

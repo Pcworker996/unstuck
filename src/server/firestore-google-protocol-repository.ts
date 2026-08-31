@@ -153,9 +153,15 @@ export function createFirestoreGoogleProtocolRepository(
             ? { [idempotencyKey]: idempotencyRecord }
             : { ...(value.idempotency ?? {}), [idempotencyKey]: idempotencyRecord }
         }, { merge: true });
+        const nextProtocol = {
+          ...current,
+          version: nextVersion,
+          pivotState: persistedState
+        };
+        if (isUnsavedTerminalState(state)) delete nextProtocol.pivotState;
         return {
           kind: "saved" as const,
-          protocol: { ...current, version: nextVersion, pivotState: persistedState }
+          protocol: nextProtocol
         };
       });
     }

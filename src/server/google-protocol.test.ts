@@ -333,17 +333,11 @@ describe("Google Protocol", () => {
       state: { persistence: "unsaved", recommendation: { primary: { kind: "grounding" } } }
     });
 
-    await expect(loadGoogleProtocol(
-      { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
-      { repository }
-    )).resolves.toMatchObject({ kind: "protocol", protocol: { pivotState: undefined } });
     const loaded = await loadGoogleProtocol(
       { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
       { repository }
     );
-    if (loaded.kind !== "protocol" || !loaded.protocol.pivotState || typeof loaded.protocol.pivotState !== "object") return;
-    expect(loaded.protocol.pivotState).toMatchObject({ recommendation: { primary: { kind: "grounding" } } });
-    expect(loaded.protocol.pivotState).not.toHaveProperty("miniPlan");
+    expect(loaded).toMatchObject({ kind: "protocol", protocol: { pivotState: undefined } });
     await expect(listGoogleSavedProtocols(
       { subject: "firebase-user-1" },
       { repository }

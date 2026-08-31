@@ -85,6 +85,47 @@ describe("Firestore Google Protocol repository", () => {
     });
   });
 
+  it("keeps unsaved terminal receipts opaque while retaining idempotent replay", async () => {
+    const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
+    await repository.create({
+      id: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      version: 0,
+      createdAt: "2026-08-26T12:00:00.000Z"
+    });
+    const receipt = {
+      kind: "pivot-protocol",
+      phase: "outcome",
+      persistence: "unsaved",
+      saveRequested: false,
+      outcome: { status: "completed" }
+    };
+
+    const saved = await repository.saveState({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      expectedVersion: 0,
+      idempotencyKey: "outcome",
+      fingerprint: "outcome-command",
+      state: receipt
+    });
+    expect(saved).toMatchObject({ kind: "saved", protocol: { version: 1 } });
+    expect(saved.protocol).not.toHaveProperty("pivotState");
+    await expect(repository.findByIdForOwner({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1"
+    })).resolves.toMatchObject({ version: 1, pivotState: undefined });
+    await expect(repository.findIdempotent({
+      protocolId: "protocol-1",
+      ownerSubject: "firebase-user-1",
+      idempotencyKey: "outcome",
+      fingerprint: "outcome-command"
+    })).resolves.toMatchObject({
+      kind: "match",
+      protocol: { version: 1, pivotState: receipt }
+    });
+  });
+
   it("lists saved states only within the authenticated owner's collection", async () => {
     const repository = createFirestoreGoogleProtocolRepository(new FakeFirestore() as unknown as Firestore);
     await repository.create({ id: "saved-1", ownerSubject: "firebase-user-1", version: 1, createdAt: "2026-08-26T12:00:00.000Z" });
@@ -167,7 +208,11 @@ class FakeDocument {
 
   setNow(value: Record<string, unknown>, options?: { merge?: boolean }): void {
     const existing = this.documents.get(this.path);
-    this.documents.set(this.path, options?.merge && existing ? { ...existing, ...value } : value);
+    const next = options?.merge && existing ? { ...existing, ...value } : { ...value };
+    for (const [key, entry] of Object.entries(next)) {
+      if (isFirestoreDeleteSentinel(entry)) delete next[key];
+    }
+    this.documents.set(this.path, next);
   }
 
   async get(): Promise<{ exists: boolean; data: () => Record<string, unknown> | undefined }> {
@@ -178,4 +223,8 @@ class FakeDocument {
   async delete(): Promise<void> {
     this.documents.delete(this.path);
   }
+}
+
+function isFirestoreDeleteSentinel(value: unknown): boolean {
+  return typeof value === "object" && value !== null && value.constructor.name === "DeleteTransform";
 }
