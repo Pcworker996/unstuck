@@ -11,9 +11,10 @@ import {
 import type { GooglePivotAdaptation } from "../app/google-pivot-protocol";
 import type { GoogleMemoryRepository } from "./google-memory";
 import type { GooglePdfTemporaryStorage } from "../app/google-supporting-artifacts";
+import { PIVOT_LIBRARY, getPivotByKind } from "../app/pivot-library";
 import type { GoogleQuotaService } from "./google-quotas";
 import type { GoogleTelemetryLogger } from "./google-telemetry";
-import { isGoogleProtocolExpired, shouldClearUnsavedExpiry, unsavedProtocolExpiresAt } from "./google-protocol-retention";
+import { isGoogleProtocolExpired, isTerminalProtocolState, shouldClearUnsavedExpiry, unsavedProtocolExpiresAt } from "./google-protocol-retention";
 
 export type GoogleProtocol = {
   id: string;
@@ -264,7 +265,8 @@ export async function runGoogleProtocolCommand(
     result = { kind: "ok", state: await persistGoogleDerivedMemory(result.state, dependencies.adaptation.memoryRepository, dependencies.adaptation.embed, input.subject, input.protocolId) };
   }
 
-  const nextState = { ...stateForPersistence(result.state), version: existing.version + 1 };
+  const responseState = { ...result.state, version: existing.version + 1 };
+  const nextState = { ...stateForPersistence(result.state), version: responseState.version };
   let saved: GoogleProtocolMutation;
   try {
     saved = await dependencies.repository.saveState({
@@ -285,7 +287,7 @@ export async function runGoogleProtocolCommand(
     return {
       kind: "dependency-unavailable",
       message: "The private protocol store is temporarily unavailable; your valid state was preserved for retry.",
-      state: stateAfterPersistenceFailure(nextState)
+      state: stateAfterPersistenceFailure(responseState)
     };
   }
   if (saved.kind === "conflict") {
@@ -297,7 +299,7 @@ export async function runGoogleProtocolCommand(
   if (saved.kind === "idempotency-conflict") {
     return { kind: "idempotency-conflict", protocol: saved.protocol };
   }
-  return { kind: "state", state: nextState, replayed: false };
+  return { kind: "state", state: responseState, replayed: false };
 }
 
 function currentState(protocol: StoredGoogleProtocol): Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined {
@@ -366,7 +368,8 @@ function stateAfterPersistenceFailure(state: Extract<GooglePivotResult, { kind: 
 function stateForPersistence(
   state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
 ): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
-  if (state.phase !== "outcome" || !state.saveRequested) return state;
+  if (state.phase !== "outcome") return state;
+  if (!state.saveRequested) return unsavedOutcomeReceipt(state);
   const { recommendation: _recommendation, miniPlan: _miniPlan, ...retained } = state;
   return {
     ...retained,
@@ -375,6 +378,57 @@ function stateForPersistence(
       pivotHistory: retained.situationMap.pivotHistory.filter((item) => !item.id.startsWith("pivot-step-"))
     },
     activity: retained.activity.filter((event) => event.kind !== "step-feedback" && event.kind !== "step-generation")
+  };
+}
+
+function unsavedOutcomeReceipt(
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
+): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
+  const selectedPivot = getPivotByKind(state.selectedPivot?.kind ?? state.selectedAction?.kind ?? "") ?? PIVOT_LIBRARY[0];
+  const selectedAction = defaultSituationalActionForPivot(selectedPivot);
+  const alternatives = PIVOT_LIBRARY.filter((pivot) => pivot.kind !== selectedPivot.kind).slice(0, 2);
+  return {
+    kind: "pivot-protocol",
+    checkIn: { quickDump: "" },
+    situationMap: {
+      shared: [],
+      artifactClaims: [],
+      interpretations: [],
+      uncertainties: [],
+      contradictions: [],
+      constraints: [],
+      progress: [],
+      pivotHistory: [],
+      priorPatterns: []
+    },
+    version: state.version,
+    phase: "outcome",
+    revisions: [],
+    selectedPivot,
+    selectedAction,
+    outcome: state.outcome,
+    saveRequested: false,
+    persistence: "unsaved",
+    enrichment: "not-requested",
+    memoryExplanations: [],
+    retrievedMemories: [],
+    retrievalAttempted: false,
+    adaptationStatus: "not-requested",
+    excludedMemoryIds: [],
+    guidancePreferenceIds: [],
+    imageProcessing: { status: "not-provided", message: "No image was retained." },
+    artifacts: [],
+    artifactBytes: 0,
+    approvedArtifactClaimIds: [],
+    recommendation: {
+      primary: selectedPivot,
+      primaryAction: selectedAction,
+      alternatives,
+      alternativeActions: alternatives.map(defaultSituationalActionForPivot),
+      whyThisPivot: "The selected Pivot outcome was recorded."
+    },
+    activity: [],
+    fallback: false
   };
 }
 
@@ -516,10 +570,12 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
         version: protocol.version + 1,
         pivotState: state,
         ...(shouldClearUnsavedExpiry(state) ? { expiresAt: undefined } : {}),
-        idempotency: {
-          ...protocol.idempotency,
-          [idempotencyKey]: { version: protocol.version + 1, state, fingerprint }
-        }
+        idempotency: isTerminalProtocolState(state)
+          ? { [idempotencyKey]: { version: protocol.version + 1, state, fingerprint } }
+          : {
+              ...protocol.idempotency,
+              [idempotencyKey]: { version: protocol.version + 1, state, fingerprint }
+            }
       };
       protocols.set(protocolId, next);
       return { kind: "saved", protocol: visibleProtocol(next) };

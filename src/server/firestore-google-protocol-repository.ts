@@ -2,7 +2,7 @@ import { FieldValue, type Firestore } from "firebase-admin/firestore";
 
 import type { GoogleProtocolRepository } from "./google-protocol";
 import { type GooglePivotResult } from "../app/google-pivot-protocol";
-import { isGoogleProtocolExpired, shouldClearUnsavedExpiry } from "./google-protocol-retention";
+import { isGoogleProtocolExpired, isTerminalProtocolState, shouldClearUnsavedExpiry } from "./google-protocol-retention";
 
 const ACCOUNTS_COLLECTION = "personalAccounts";
 const PROTOCOLS_COLLECTION = "protocols";
@@ -142,14 +142,14 @@ export function createFirestoreGoogleProtocolRepository(
 
         const nextVersion = value.version + 1;
         const persistedState = withoutUndefined(state);
+        const idempotencyRecord = { version: nextVersion, state: persistedState, fingerprint };
         transaction.set(reference, {
           version: nextVersion,
           pivotState: persistedState,
           ...(shouldClearUnsavedExpiry(state) ? { expiresAt: FieldValue.delete() } : {}),
-          idempotency: {
-            ...(value.idempotency ?? {}),
-            [idempotencyKey]: { version: nextVersion, state: persistedState, fingerprint }
-          }
+          idempotency: isTerminalProtocolState(state)
+            ? { [idempotencyKey]: idempotencyRecord }
+            : { ...(value.idempotency ?? {}), [idempotencyKey]: idempotencyRecord }
         }, { merge: true });
         return {
           kind: "saved" as const,

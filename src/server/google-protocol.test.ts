@@ -327,19 +327,56 @@ describe("Google Protocol", () => {
     await expect(runGoogleProtocolCommand({
       subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 2, idempotencyKey: "outcome",
       command: { type: "record-outcome", outcome: { status: "completed" } }
-    }, { repository })).resolves.toMatchObject({ kind: "state", replayed: true, state: { persistence: "unsaved" } });
+    }, { repository })).resolves.toMatchObject({
+      kind: "state",
+      replayed: true,
+      state: { persistence: "unsaved", recommendation: { primary: { kind: "grounding" } } }
+    });
 
     await expect(loadGoogleProtocol(
       { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
       { repository }
     )).resolves.toMatchObject({
       kind: "protocol",
-      protocol: { pivotState: { persistence: "unsaved", outcome: { status: "completed" } } }
+      protocol: {
+        pivotState: {
+          persistence: "unsaved",
+          outcome: { status: "completed" },
+          checkIn: { quickDump: "" },
+          situationMap: {
+            shared: [],
+            artifactClaims: [],
+            interpretations: [],
+            uncertainties: [],
+            contradictions: [],
+            constraints: [],
+            progress: [],
+            pivotHistory: [],
+            priorPatterns: []
+          },
+          activity: [],
+          retrievedMemories: [],
+          memoryExplanations: []
+        }
+      }
     });
+    const loaded = await loadGoogleProtocol(
+      { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
+      { repository }
+    );
+    if (loaded.kind !== "protocol" || !loaded.protocol.pivotState || typeof loaded.protocol.pivotState !== "object") return;
+    expect(loaded.protocol.pivotState).toMatchObject({ recommendation: { primary: { kind: "grounding" } } });
+    expect(loaded.protocol.pivotState).not.toHaveProperty("miniPlan");
     await expect(listGoogleSavedProtocols(
       { subject: "firebase-user-1" },
       { repository }
     )).resolves.toEqual({ kind: "protocols", protocols: [] });
+    const stored = await repository.findByIdForOwner({ protocolId: "protocol-unsaved", ownerSubject: "firebase-user-1" });
+    expect(JSON.stringify(stored)).not.toContain("This Quick dump must not become history.");
+    expect(stored).toMatchObject({
+      pivotState: { checkIn: { quickDump: "" }, situationMap: { shared: [] } }
+    });
+    expect(Object.keys(stored?.idempotency ?? {})).toEqual(["outcome"]);
   });
 
   it("persists only the selected action and final outcome from a completed mini-plan", async () => {
