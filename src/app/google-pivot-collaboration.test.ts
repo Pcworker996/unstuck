@@ -26,7 +26,7 @@ describe("collaborative Google Pivot Protocol", () => {
     const action = (step: number) => ({
       id: `action-${step}`,
       kind: "task-first-step" as const,
-      title: `Synthetic step ${step}`,
+      title: `Start synthetic step ${step}`,
       instruction: `Do the synthetic step ${step} for this situation.`,
       goal: `Complete the goal for synthetic step ${step}.`,
       steps: [`Start synthetic step ${step}.`],
@@ -45,8 +45,8 @@ describe("collaborative Google Pivot Protocol", () => {
           alternativePivotKinds: ["grounding", "reaching-out"],
           primaryAction: action(step),
           alternativeActions: [
-            { ...action(step), id: `grounding-${step}`, kind: "grounding", title: `Grounding alternative ${step}` },
-            { ...action(step), id: `reaching-out-${step}`, kind: "reaching-out", title: `Connection alternative ${step}` }
+            { ...action(step), id: `grounding-${step}`, kind: "grounding", title: `Name grounding alternative ${step}` },
+            { ...action(step), id: `reaching-out-${step}`, kind: "reaching-out", title: `Send connection alternative ${step}` }
           ],
           whyThisPivot: "The action reflects the current synthetic situation."
         };
@@ -67,7 +67,7 @@ describe("collaborative Google Pivot Protocol", () => {
     }, generator);
     expect(selected.kind).toBe("ok");
     if (selected.kind !== "ok") return;
-    expect(selected.state.miniPlan).toMatchObject({ stepNumber: 1, currentAction: { title: "Synthetic step 1" } });
+    expect(selected.state.miniPlan).toMatchObject({ stepNumber: 1, currentAction: { title: "Start synthetic step 1" } });
 
     const next = await runGooglePivotCommand(selected.state, {
       type: "record-step-feedback",
@@ -75,7 +75,7 @@ describe("collaborative Google Pivot Protocol", () => {
     }, generator);
     expect(next.kind).toBe("ok");
     if (next.kind !== "ok") return;
-    expect(next.state.miniPlan).toMatchObject({ stepNumber: 2, currentAction: { title: "Synthetic step 2" }, feedback: [{ status: "completed" }] });
+    expect(next.state.miniPlan).toMatchObject({ stepNumber: 2, currentAction: { title: "Start synthetic step 2" }, feedback: [{ status: "completed" }] });
     expect(next.state.activity).toContainEqual({
       kind: "step-generation",
       message: "The next situational Pivot action was generated from the person's feedback."
@@ -87,7 +87,7 @@ describe("collaborative Google Pivot Protocol", () => {
     }, generator);
     expect(finalStep.kind).toBe("ok");
     if (finalStep.kind !== "ok") return;
-    expect(finalStep.state.miniPlan).toMatchObject({ stepNumber: 3, currentAction: { title: "Synthetic step 3" }, feedback: [{ status: "completed" }, { status: "blocked", note: "Synthetic blocker" }] });
+    expect(finalStep.state.miniPlan).toMatchObject({ stepNumber: 3, currentAction: { title: "Start synthetic step 3" }, feedback: [{ status: "completed" }, { status: "blocked", note: "Synthetic blocker" }] });
 
     const completedFinalStep = await runGooglePivotCommand(finalStep.state, {
       type: "record-step-feedback",

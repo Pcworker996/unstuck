@@ -99,7 +99,14 @@ describe("Google Pivot Protocol", () => {
 
   it.each([
     { title: "Open the moving checklist", missing: "goal" },
-    { title: "Make a plan", missing: undefined }
+    { title: "Make a plan", missing: undefined },
+    { title: "Do the task", missing: undefined },
+    { title: "Get unstuck now", missing: undefined },
+    { title: "Write something", missing: undefined },
+    { title: "Start this", missing: undefined },
+    { title: "Take action now", missing: undefined },
+    { title: "Take a step", missing: undefined },
+    { title: "Start work", missing: undefined }
   ])("uses a detailed curated fallback for an invalid action ($title)", async ({ title, missing }) => {
     const result = await runGooglePivotProtocol(
       { quickDump: "I am stuck on a normal task.", consentGiven: true },
@@ -137,6 +144,39 @@ describe("Google Pivot Protocol", () => {
       doneWhen: expect.any(String),
       whyThisFits: expect.any(String)
     });
+  });
+
+  it.each(["It fits.", "This is a small action for your situation."]) ("uses a curated action when the generated fit rationale is generic (%s)", async (whyThisFits) => {
+    const result = await runGooglePivotProtocol(
+      { quickDump: "I am stuck on a normal task.", consentGiven: true },
+      {
+        async generate({ situationMap }) {
+          return {
+            situationMap,
+            primaryPivotKind: "task-first-step",
+            alternativePivotKinds: ["grounding", "reaching-out"],
+            whyThisPivot: "A small action is available.",
+            primaryAction: {
+              id: "generic-rationale",
+              kind: "task-first-step",
+              title: "Open the task list",
+              instruction: "Open the task list.",
+              goal: "Make one task visible.",
+              steps: ["Open the task list."],
+              doneWhen: "The task list is open.",
+              estimatedMinutes: 5,
+              fallbackInstruction: "Put the task list where you can see it.",
+              whyThisFits
+            }
+          };
+        }
+      }
+    );
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol") return;
+    expect(result.fallback).toBe(true);
+    expect(result.recommendation?.primaryAction.id).toBe("task-first-visible-step-situational");
   });
 
   it("stops before generation for immediate danger", async () => {
@@ -519,6 +559,89 @@ describe("Google Pivot Protocol", () => {
     expect(result.kind).toBe("pivot-protocol");
     expect(preparedMap?.artifactClaims).toEqual([]);
     expect(retrievals).toBe(1);
+  });
+
+  it("repairs an invalid personalized recommendation before falling back", async () => {
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          whyThisPivot: "A bounded next step."
+        };
+      },
+      async adapt() {
+        return { invalid: true };
+      },
+      async repair({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "reaching-out",
+          alternativePivotKinds: ["grounding", "task-first-step"],
+          whyThisPivot: "The repaired recommendation keeps the next action bounded."
+        };
+      }
+    };
+
+    const result = await runGooglePivotProtocol(
+      { quickDump: "I am stuck on a work task.", consentGiven: true },
+      generator,
+      {
+        ownerSubject: "owner-1",
+        embed: async () => new Array(768).fill(0),
+        retrieveSimilarMemories: async () => [],
+        listGuidancePreferences: async () => [{ id: "preference-1", text: "Keep actions concrete.", createdAt: "2026-08-31T00:00:00.000Z" }]
+      }
+    );
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol") return;
+    expect(result.adaptationStatus).toBe("personalized");
+    expect(result.fallback).toBe(false);
+    expect(result.recommendation?.primary.kind).toBe("reaching-out");
+    expect(result.recommendation?.whyThisPivot).toBe("The repaired recommendation keeps the next action bounded.");
+  });
+
+  it("repairs a personalization exception before falling back", async () => {
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          whyThisPivot: "A bounded next step."
+        };
+      },
+      async adapt() {
+        throw new Error("personalization unavailable");
+      },
+      async repair({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "grounding",
+          alternativePivotKinds: ["reaching-out", "task-first-step"],
+          whyThisPivot: "The repaired recommendation keeps the next action bounded."
+        };
+      }
+    };
+
+    const result = await runGooglePivotProtocol(
+      { quickDump: "I am stuck on a work task.", consentGiven: true },
+      generator,
+      {
+        ownerSubject: "owner-1",
+        embed: async () => new Array(768).fill(0),
+        retrieveSimilarMemories: async () => [],
+        listGuidancePreferences: async () => [{ id: "preference-1", text: "Keep actions concrete.", createdAt: "2026-08-31T00:00:00.000Z" }]
+      }
+    );
+
+    expect(result.kind).toBe("pivot-protocol");
+    if (result.kind !== "pivot-protocol") return;
+    expect(result.adaptationStatus).toBe("personalized");
+    expect(result.fallback).toBe(false);
+    expect(result.recommendation?.primary.kind).toBe("grounding");
   });
 
   it("does not permit a second accepted image", async () => {

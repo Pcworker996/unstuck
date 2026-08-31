@@ -445,6 +445,8 @@ function GooglePivotResultView({
           {(() => {
             const action = result.phase === "selected" && result.miniPlan
               ? result.miniPlan.currentAction
+              : result.phase === "outcome"
+                ? result.selectedAction ?? recommendation.primaryAction
               : recommendation.primaryAction;
             return (
               <>

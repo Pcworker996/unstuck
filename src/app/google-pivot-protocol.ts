@@ -464,6 +464,7 @@ export async function runGooglePivotProtocol(
 
   const adapted = adaptation && pendingDerivedContext
     ? await adaptOutput({
+      quickDump,
       situationMap: output.situationMap,
         baseOutput: output,
         currentDerivedContext: pendingDerivedContext,
@@ -1331,6 +1332,7 @@ async function generateAdaptedOutput(
   }
 
   const adapted = await adaptOutput({
+    quickDump,
     situationMap: generated.output.situationMap,
     baseOutput: generated.output,
     currentDerivedContext,
@@ -1351,6 +1353,7 @@ async function generateAdaptedOutput(
 }
 
 async function adaptOutput({
+  quickDump,
   situationMap,
   baseOutput,
   currentDerivedContext,
@@ -1358,6 +1361,7 @@ async function adaptOutput({
   adaptation,
   reuseMemories
 }: {
+  quickDump: string;
   situationMap: SituationMap;
   baseOutput: GooglePivotGeneratorOutput;
   currentDerivedContext: string;
@@ -1380,14 +1384,26 @@ async function adaptOutput({
     const memories = sanitizeRetrievedMemories(retrieved, excludedMemoryIds);
     const guidancePreferences = [...await adaptation.listGuidancePreferences(adaptation.ownerSubject)];
     let adaptedOutput: unknown;
+    let adaptationWasRepaired = false;
     if (generator.adapt && (generator.usesMemoryTool || memories.length > 0 || guidancePreferences.length > 0)) {
-      adaptedOutput = await generator.adapt({
-        situationMap: adaptationMap(situationMap),
-        currentDerivedContext,
-        retrievedMemories: generator.usesMemoryTool && !reuseMemories ? [] : memories,
-        guidancePreferences,
-        ...(toolState ? { memoryTool: toolState.tool } : {})
-      });
+      try {
+        adaptedOutput = await generator.adapt({
+          situationMap: adaptationMap(situationMap),
+          currentDerivedContext,
+          retrievedMemories: generator.usesMemoryTool && !reuseMemories ? [] : memories,
+          guidancePreferences,
+          ...(toolState ? { memoryTool: toolState.tool } : {})
+        });
+      } catch (error) {
+        if (!generator.repair) throw error;
+        adaptationWasRepaired = true;
+        adaptedOutput = await generator.repair({
+          quickDump,
+          situationMap,
+          invalidOutput: error,
+          retrievedMemories: memories
+        });
+      }
     }
     const toolWasSkipped = Boolean(generator.usesMemoryTool && !reuseMemories && toolState && !toolState.wasCalled());
     const toolMemories = toolState?.memories() ?? [];
@@ -1416,10 +1432,27 @@ async function adaptOutput({
     if (resolvedMemories.length === 0 && guidancePreferences.length === 0) {
       return { output: baseOutput, status: "no-match", explanations: [], preferenceIds: [], memories: [], retrievalAttempted, retrievalMode };
     }
-    adaptedOutput = toolWasSkipped
-      ? fallbackAdaptation(situationMap, resolvedMemories, guidancePreferences)
-      : adaptedOutput ?? fallbackAdaptation(situationMap, resolvedMemories, guidancePreferences);
-    const output = validatedGeneratedOutput(adaptedOutput, situationMap);
+    const fallbackOutputCandidate = fallbackAdaptation(situationMap, resolvedMemories, guidancePreferences);
+    let output: GooglePivotGeneratorOutput;
+    if (adaptedOutput !== undefined && !toolWasSkipped) {
+      try {
+        output = validatedGeneratedOutput(adaptedOutput, situationMap);
+      } catch (error) {
+        if (!generator.repair || adaptationWasRepaired) throw error;
+        const repairedOutput = await generator.repair({
+          quickDump,
+          situationMap,
+          invalidOutput: adaptedOutput,
+          retrievedMemories: resolvedMemories
+        });
+        output = validatedGeneratedOutput(repairedOutput, situationMap);
+      }
+    } else {
+      output = validatedGeneratedOutput(
+        toolWasSkipped ? fallbackOutputCandidate : adaptedOutput ?? fallbackOutputCandidate,
+        situationMap
+      );
+    }
     const preservedMap = preserveAcceptedMapItems(output.situationMap, situationMap, []);
     return {
       output: {
@@ -2048,6 +2081,9 @@ function validatedSituationalAction(value: unknown, pivot: Pivot): SituationalPi
   if (!isConcreteActionTitle(value.title)) {
     throw new Error("Generated situational Pivot action title is too vague.");
   }
+  if (!isSpecificFitRationale(value.whyThisFits)) {
+    throw new Error("Generated situational Pivot fit rationale is too vague.");
+  }
   for (const text of [value.title, value.instruction, value.goal, value.doneWhen, value.fallbackInstruction, value.whyThisFits]) {
     if (!text.trim() || text.length > 600) throw new Error("Generated situational Pivot action text is invalid.");
     validateSafeAgentText(text);
@@ -2147,8 +2183,21 @@ const defaultGenerator: GooglePivotGenerator = {
 
 function isConcreteActionTitle(title: string): boolean {
   const normalized = title.trim().toLowerCase().replace(/[.!?]+$/, "");
+  const words = normalized.split(/\s+/);
   if (normalized.split(/\s+/).length < 2) return false;
-  return !/^(make a plan|work on it|take the next step|do something|deal with it|feel better|focus on yourself)$/.test(normalized);
+  if (/^(make a plan|work on it|take the next step|take action|do something|do the task|deal with it|feel better|feel less stuck|focus on yourself|get unstuck(?: now)?|get started|write something|start this)$/.test(normalized)) {
+    return false;
+  }
+  if (!/^(ask|breathe|call|check|choose|circle|close|count|draft|drink|eat|find|get|hold|identify|list|look|make|mark|move|name|open|pause|pick|place|put|read|record|reply|review|select|send|set|sit|sort|stand|start|take|text|type|use|walk|write)\b/.test(normalized)) {
+    return false;
+  }
+  const genericWords = new Set(["a", "an", "the", "this", "that", "it", "something", "anything", "action", "task", "thing", "step", "work", "unstuck", "stuck", "better", "progress", "now", "today", "one"]);
+  return words.slice(1).some((word) => !genericWords.has(word));
+}
+
+function isSpecificFitRationale(rationale: string): boolean {
+  const normalized = rationale.trim().toLowerCase().replace(/[.!?]+$/, "");
+  return !/^(it fits|this fits|a good fit|this is a good fit|it is a good fit|a good choice|this is helpful|it is helpful|this should help|this is a small action(?: for your situation)?|this suits the task)$/.test(normalized);
 }
 
 function isProvenance(value: unknown): value is Provenance {
