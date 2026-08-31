@@ -34,18 +34,34 @@ const situationMapSchema = z.object({
   priorPatterns: z.array(mapItemSchema)
 });
 
-const situationalActionSchema = z.object({
+const situationalActionFields = {
   id: z.string().min(1).max(120),
-  kind: z.enum(["grounding", "breathing-focus", "reaching-out", "basic-needs-reset", "task-first-step"]),
   title: z.string().min(1).max(160),
   instruction: z.string().min(1).max(600),
   goal: z.string().min(1).max(300),
-  steps: z.array(z.string().min(1).max(240)).min(1).max(3),
   doneWhen: z.string().min(1).max(300),
-  estimatedMinutes: z.number().int().min(1).max(30),
   fallbackInstruction: z.string().min(1).max(600),
   whyThisFits: z.string().min(1).max(300)
-});
+};
+
+const shortSituationalActionFields = {
+  ...situationalActionFields,
+  steps: z.array(z.string().min(1).max(240)).min(1).max(3),
+  estimatedMinutes: z.number().int().min(1).max(30)
+};
+
+const situationalActionSchema = z.discriminatedUnion("kind", [
+  z.object({ ...shortSituationalActionFields, kind: z.literal("grounding") }),
+  z.object({ ...shortSituationalActionFields, kind: z.literal("breathing-focus") }),
+  z.object({ ...shortSituationalActionFields, kind: z.literal("reaching-out") }),
+  z.object({ ...shortSituationalActionFields, kind: z.literal("basic-needs-reset") }),
+  z.object({
+    ...situationalActionFields,
+    kind: z.literal("task-first-step"),
+    steps: z.array(z.string().min(1).max(240)).min(1).max(6),
+    estimatedMinutes: z.number().int().min(1).max(60)
+  })
+]);
 
 const guideResponseSchema = z.object({
   acknowledgment: z.string().min(1).max(600),
@@ -305,7 +321,7 @@ function promptFor(input: {
     "Keep artifact-derived claims in artifactClaims with provenance artifact. Never promote artifact or guide claims to person provenance.",
     "Keep contradictions explicit in contradictions until the person resolves them; do not silently choose between conflicting claims.",
     "Use exactly one primary Pivot and exactly two distinct alternatives.",
-    "For each Pivot, generate a situational action tailored to the current Situation map. Each action must stay within its Pivot kind, take 1–30 minutes, use an observable verb-and-context title, state a concrete goal, include 1–3 micro-steps, define when the person can stop, include a smaller fallback, explain why it fits the explicit context, and never cause an external side effect.",
+    "For each Pivot, generate a situational action tailored to the current Situation map. Grounding, breathing-focus, reaching-out, and basic-needs-reset actions must take 1–30 minutes and include 1–3 micro-steps. A task-first-step action may be a detailed work-oriented action taking 1–60 minutes with up to 6 ordered steps. For a task-first-step, use only explicit deadlines, judging criteria, point values, constraints, dependencies, and project status in the Situation map to prioritize the highest-value feasible work. Never invent or assume any missing deadline, criterion, score, constraint, dependency, or status; if the information is missing, use a generic next step or ask one useful clarification. Every action must use an observable verb-and-context title, state a concrete goal, define when the person can stop, include a smaller fallback, explain why it fits the explicit context, and never cause an external side effect.",
     "If one useful clarification remains, return one clarificationQuestion; ask no more than two total and never ask more than one at a time.",
     "Return a guideResponse with a brief visible acknowledgment, factual explanation, and at most three suggested replies. It may describe only the structured updates returned here; never include hidden reasoning or imply that raw conversation is protocol state.",
     "Pivot kinds must be one of: grounding, breathing-focus, reaching-out, basic-needs-reset, task-first-step.",
@@ -331,7 +347,7 @@ function adaptationPromptFor(input: {
     "Do not mention or reconstruct raw Private entries. Treat each prior memory as a compact factual summary.",
     "Keep person statements and corrections in their existing provenance. Keep prior patterns as guide interpretations.",
     "Use exactly one primary Pivot and exactly two distinct alternatives from: grounding, breathing-focus, reaching-out, basic-needs-reset, task-first-step.",
-    "For each Pivot, generate a situational action tailored to the current Situation map. Each action must stay within its Pivot kind, take 1–30 minutes, use an observable verb-and-context title, state a concrete goal, include 1–3 micro-steps, define when the person can stop, include a smaller fallback, explain why it fits the explicit context, and never cause an external side effect.",
+    "For each Pivot, generate a situational action tailored to the current Situation map. Grounding, breathing-focus, reaching-out, and basic-needs-reset actions must take 1–30 minutes and include 1–3 micro-steps. A task-first-step action may be a detailed work-oriented action taking 1–60 minutes with up to 6 ordered steps. For a task-first-step, use only explicit deadlines, judging criteria, point values, constraints, dependencies, and project status in the Situation map to prioritize the highest-value feasible work. Never invent or assume any missing deadline, criterion, score, constraint, dependency, or status; if the information is missing, use a generic next step or ask one useful clarification. Every action must use an observable verb-and-context title, state a concrete goal, define when the person can stop, include a smaller fallback, explain why it fits the explicit context, and never cause an external side effect.",
     "Treat a completed outcome with a more-able Agency shift as the strongest helpful signal when it is relevant; it may strengthen a similar bounded option without becoming a guarantee.",
     "Treat not-a-fit, skipped, blocked-step, and less-able outcomes or signals as cautionary: shrink, adapt, or avoid the related action for this Check-in without treating the signal as a permanent conclusion.",
     "Return a guideResponse with a brief visible acknowledgment, factual explanation, and at most three suggested replies. It may describe only the structured updates returned here; never include hidden reasoning or imply that raw conversation is protocol state.",

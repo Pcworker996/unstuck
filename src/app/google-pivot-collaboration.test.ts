@@ -123,6 +123,74 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(generations).toBe(3);
   });
 
+  it("carries a detailed Gemini-curated work action into the mini-plan", async () => {
+    const detailedWorkAction = {
+      id: "judge-high-value-section",
+      kind: "task-first-step" as const,
+      title: "Review judging criteria and complete the highest-value gap",
+      instruction: "Review the judging criteria, prioritize the largest feasible point improvement, and complete that section.",
+      goal: "Use the available time on the work most likely to improve the judged result.",
+      steps: [
+        "Open the judging criteria and note the point value of each section.",
+        "Mark the sections that are complete, weak, or missing.",
+        "Rank the unfinished sections by points gained relative to time required.",
+        "Choose the highest-value feasible section before the deadline.",
+        "Complete that section and check it against the criteria.",
+        "Record the remaining gap and stop for feedback."
+      ],
+      doneWhen: "The highest-value feasible section is improved and checked against the criteria.",
+      estimatedMinutes: 60,
+      fallbackInstruction: "Open the criteria and mark only the highest-value incomplete section.",
+      whyThisFits: "You said the deadline is close and maximizing judging criteria points is the priority."
+    };
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          whyThisPivot: "A criteria-led work pass makes the deadline actionable.",
+          primaryAction: detailedWorkAction
+        };
+      }
+    };
+
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "My report is due soon and I need to maximize judging criteria points.",
+      consentGiven: true
+    }, generator);
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const selected = await runGooglePivotCommand(started.state, {
+      type: "select-pivot",
+      pivotKind: "task-first-step"
+    }, generator);
+    expect(selected).toMatchObject({
+      kind: "ok",
+      state: {
+        fallback: false,
+        miniPlan: {
+          stepNumber: 1,
+          maxSteps: 3,
+          currentAction: {
+            title: "Review judging criteria and complete the highest-value gap",
+            estimatedMinutes: 60,
+            steps: [
+              "Open the judging criteria and note the point value of each section.",
+              "Mark the sections that are complete, weak, or missing.",
+              "Rank the unfinished sections by points gained relative to time required.",
+              "Choose the highest-value feasible section before the deadline.",
+              "Complete that section and check it against the criteria.",
+              "Record the remaining gap and stop for feedback."
+            ]
+          }
+        }
+      }
+    });
+  });
+
   it("asks one clarification at a time, allows skips, and caps questions at two", async () => {
     let generation = 0;
     const generator: GooglePivotGenerator = {

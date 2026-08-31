@@ -111,6 +111,55 @@ describe("Google Pivot Protocol", () => {
     });
   });
 
+  it("accepts a richer work plan for a task-first-step Pivot", async () => {
+    const result = await runGooglePivotProtocol(
+      {
+        quickDump: "My report is due soon and I need to maximize the judging criteria points.",
+        consentGiven: true
+      },
+      {
+        async generate({ situationMap }) {
+          const workAction = {
+            id: "prioritize-report-criteria",
+            kind: "task-first-step" as const,
+            title: "Review the judging criteria and complete the highest-value gap",
+            instruction: "Review the judging criteria, rank unfinished sections by available points, and complete the highest-value feasible section.",
+            goal: "Spend the available time on the work most likely to improve the judged result.",
+            steps: [
+              "Open the judging criteria and note the points assigned to each section.",
+              "Mark which sections are already complete and which are still weak or missing.",
+              "Rank the remaining sections by points gained relative to the time required.",
+              "Choose the highest-value section that can be improved before the deadline.",
+              "Complete and verify that section against its stated criteria.",
+              "Stop after recording what is complete and what remains for the next pass."
+            ],
+            doneWhen: "The highest-value feasible section has been improved and checked against the judging criteria.",
+            estimatedMinutes: 60,
+            fallbackInstruction: "Open the judging criteria and mark only the highest-value incomplete section.",
+            whyThisFits: "You said the report is due soon and that maximizing judging criteria points matters most."
+          };
+          return {
+            situationMap,
+            primaryPivotKind: "task-first-step",
+            alternativePivotKinds: ["grounding", "reaching-out"],
+            whyThisPivot: "A criteria-led work pass makes the deadline actionable.",
+            primaryAction: workAction
+          };
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ kind: "pivot-protocol", fallback: false });
+    if (result.kind !== "pivot-protocol" || !result.recommendation) return;
+    expect(result.recommendation.primaryAction).toMatchObject({
+      estimatedMinutes: 60,
+      steps: expect.arrayContaining([
+        "Rank the remaining sections by points gained relative to the time required."
+      ])
+    });
+    expect(result.recommendation.primaryAction.steps).toHaveLength(6);
+  });
+
   it.each([
     { title: "Open the moving checklist", missing: "goal" },
     { title: "Make a plan", missing: undefined },

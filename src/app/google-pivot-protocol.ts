@@ -3104,15 +3104,17 @@ function isValidPivotStepFeedback(feedback: unknown): feedback is PivotStepFeedb
 }
 
 function validatedSituationalAction(value: unknown, pivot: Pivot): SituationalPivotAction {
+  const maxSteps = pivot.kind === "task-first-step" ? 6 : 3;
+  const maxMinutes = pivot.kind === "task-first-step" ? 60 : 30;
   if (value === undefined) return situationalActionForPivot(pivot);
   if (!isRecord(value) || value.kind !== pivot.kind || typeof value.id !== "string" ||
       typeof value.title !== "string" || typeof value.instruction !== "string" ||
       typeof value.goal !== "string" || !Array.isArray(value.steps) ||
-      value.steps.length < 1 || value.steps.length > 3 ||
+      value.steps.length < 1 || value.steps.length > maxSteps ||
       !value.steps.every((step) => typeof step === "string") ||
       typeof value.doneWhen !== "string" ||
       typeof value.estimatedMinutes !== "number" || !Number.isInteger(value.estimatedMinutes) ||
-      value.estimatedMinutes < 1 || value.estimatedMinutes > 30 ||
+      value.estimatedMinutes < 1 || value.estimatedMinutes > maxMinutes ||
       typeof value.fallbackInstruction !== "string" || typeof value.whyThisFits !== "string") {
     throw new Error("Generated situational Pivot action is invalid.");
   }
