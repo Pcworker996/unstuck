@@ -78,6 +78,8 @@ export async function runDeterministicGoogleEvaluation(): Promise<DeterministicG
     retryCase(),
     clarificationBudgetCase(),
     retrievalBudgetCase(),
+    strictToolBudgetCase(),
+    miniPlanFeedbackCase(),
     memoryControlCase()
   ];
 
@@ -466,6 +468,70 @@ function retrievalBudgetCase(): EvaluationDefinition {
       const result = await runGooglePivotProtocol({ quickDump: "I am stuck on a normal task.", consentGiven: true }, deterministicGenerator(), memoryAdaptation());
       const protocol = asProtocol(result);
       return { attemptedOnce: protocol?.retrievalAttempted === true, atMostThreeMemories: Boolean(protocol && protocol.retrievedMemories.length <= 3), patternsAreGuideOwned: Boolean(protocol && protocol.situationMap.priorPatterns.every((item) => item.provenance === "guide")) };
+    }
+  };
+}
+
+function strictToolBudgetCase(): EvaluationDefinition {
+  return {
+    id: "strict-memory-tool-budget",
+    category: "bounded-retrieval",
+    async run() {
+      let toolCalls = 0;
+      const generator: GooglePivotGenerator = {
+        ...deterministicGenerator(),
+        usesMemoryTool: true,
+        async prepareMemory() {
+          return "A synthetic current context.";
+        },
+        async adapt({ situationMap, memoryTool }) {
+          if (!memoryTool) throw new Error("Expected a strict memory tool.");
+          toolCalls += 1;
+          await memoryTool.retrieveSimilarMemories();
+          return validOutput(situationMap);
+        }
+      };
+      const first = await runGooglePivotProtocol(
+        { quickDump: "I am stuck on a normal task.", consentGiven: true },
+        generator,
+        memoryAdaptation()
+      );
+      if (first.kind !== "pivot-protocol") return { started: false, calledOnce: false, limitedResults: false };
+      const regenerated = await runGooglePivotCommand(first, { type: "regenerate-pivot" }, generator, memoryAdaptation());
+      return {
+        started: true,
+        calledOnce: toolCalls === 1,
+        limitedResults: first.retrievedMemories.length <= 3
+          && regenerated.kind === "ok"
+          && regenerated.state.retrievedMemories.length <= 3
+      };
+    }
+  };
+}
+
+function miniPlanFeedbackCase(): EvaluationDefinition {
+  return {
+    id: "feedback-gated-mini-plan",
+    category: "bounded-interaction",
+    async run() {
+      const generator = deterministicGenerator();
+      const first = await runGooglePivotProtocol({ quickDump: "I am stuck on a normal task.", consentGiven: true }, generator);
+      if (first.kind !== "pivot-protocol" || !first.recommendation) return { started: false, oneActiveStep: false, advancesAfterFeedback: false, capsAtThree: false };
+      const selected = await runGooglePivotCommand(first, { type: "select-pivot", pivotKind: first.recommendation.primary.kind }, generator);
+      if (selected.kind !== "ok" || !selected.state.miniPlan) return { started: false, oneActiveStep: false, advancesAfterFeedback: false, capsAtThree: false };
+      const second = await runGooglePivotCommand(selected.state, { type: "record-step-feedback", feedback: { status: "completed" } }, generator);
+      if (second.kind !== "ok") return { started: true, oneActiveStep: false, advancesAfterFeedback: false, capsAtThree: false };
+      const third = await runGooglePivotCommand(second.state, { type: "record-step-feedback", feedback: { status: "partly-helpful" } }, generator);
+      if (third.kind !== "ok") return { started: true, oneActiveStep: false, advancesAfterFeedback: false, capsAtThree: false };
+      const completed = await runGooglePivotCommand(third.state, { type: "record-step-feedback", feedback: { status: "blocked" } }, generator);
+      if (completed.kind !== "ok") return { started: true, oneActiveStep: false, advancesAfterFeedback: false, capsAtThree: false };
+      const duplicate = await runGooglePivotCommand(completed.state, { type: "record-step-feedback", feedback: { status: "completed" } }, generator);
+      return {
+        started: true,
+        oneActiveStep: selected.state.miniPlan.stepNumber === 1 && selected.state.miniPlan.completedActions.length === 0,
+        advancesAfterFeedback: second.state.miniPlan?.stepNumber === 2 && third.state.miniPlan?.stepNumber === 3,
+        capsAtThree: completed.state.miniPlan?.feedback.length === 3 && duplicate.kind === "invalid-command"
+      };
     }
   };
 }

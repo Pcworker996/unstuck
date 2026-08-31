@@ -149,14 +149,14 @@ describe("Google Protocol", () => {
       now: () => "2026-08-26T12:00:00.000Z"
     };
 
-    async function createProtocol(protocolId: string, generator?: GooglePivotGenerator) {
+    async function createProtocol(protocolId: string, generator?: GooglePivotGenerator, saveRequested = false) {
       await startGoogleProtocol({ subject: "firebase-user-1" }, dependencies);
       const result = await runGoogleProtocolCommand({
         subject: "firebase-user-1",
         protocolId,
         expectedVersion: 0,
         idempotencyKey: `${protocolId}-start`,
-        command: { type: "start", quickDump: "I am stuck on a small task.", consentGiven: true }
+        command: { type: "start", quickDump: "I am stuck on a small task.", consentGiven: true, saveRequested }
       }, { repository }, generator);
       expect(result).toMatchObject({ kind: "state", replayed: false, state: { version: 1 } });
     }
@@ -183,7 +183,7 @@ describe("Google Protocol", () => {
     }, { repository });
     expect(dismissReplay).toMatchObject({ kind: "state", replayed: true, state: { version: 3 } });
 
-    await createProtocol("protocol-2");
+    await createProtocol("protocol-2", undefined, true);
     const selectInput = {
       subject: "firebase-user-1", protocolId: "protocol-2", expectedVersion: 1,
       idempotencyKey: "protocol-2-select", command: { type: "select-pivot" as const, pivotKind: "grounding" }
@@ -283,6 +283,68 @@ describe("Google Protocol", () => {
     await expect(listGoogleSavedProtocols({ subject: "firebase-user-2" }, { repository })).resolves.toMatchObject({
       protocols: [{ id: "protocol-2" }]
     });
+  });
+
+  it("deletes an unsaved Check-in after its final outcome", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    const dependencies = {
+      repository,
+      createId: () => "protocol-unsaved",
+      now: () => "2026-08-30T12:00:00.000Z"
+    };
+    await startGoogleProtocol({ subject: "firebase-user-1" }, dependencies);
+
+    await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 0, idempotencyKey: "start",
+      command: { type: "start", quickDump: "This Quick dump must not become history.", consentGiven: true, saveRequested: false }
+    }, { repository });
+    await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 1, idempotencyKey: "select",
+      command: { type: "select-pivot", pivotKind: "grounding" }
+    }, { repository });
+    await expect(runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 2, idempotencyKey: "outcome",
+      command: { type: "record-outcome", outcome: { status: "completed" } }
+    }, { repository })).resolves.toMatchObject({ kind: "state", state: { persistence: "unsaved" } });
+
+    await expect(loadGoogleProtocol(
+      { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
+      { repository }
+    )).resolves.toEqual({ kind: "not-found" });
+  });
+
+  it("persists only the selected action and final outcome from a completed mini-plan", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    const dependencies = {
+      repository,
+      createId: () => "protocol-saved",
+      now: () => "2026-08-30T12:00:00.000Z"
+    };
+    await startGoogleProtocol({ subject: "firebase-user-1" }, dependencies);
+    const started = await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-saved", expectedVersion: 0, idempotencyKey: "start",
+      command: { type: "start", quickDump: "Save only the action that I selected.", consentGiven: true, saveRequested: true }
+    }, { repository });
+    if (started.kind !== "state") return;
+    const selected = await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-saved", expectedVersion: 1, idempotencyKey: "select",
+      command: { type: "select-pivot", pivotKind: "grounding" }
+    }, { repository });
+    if (selected.kind !== "state") return;
+    const outcome = await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-saved", expectedVersion: 2, idempotencyKey: "outcome",
+      command: { type: "record-outcome", outcome: { status: "completed" } }
+    }, { repository });
+    expect(outcome).toMatchObject({ kind: "state", state: { selectedAction: { kind: "grounding" }, outcome: { status: "completed" } } });
+
+    const loaded = await loadGoogleProtocol(
+      { subject: "firebase-user-1", protocolId: "protocol-saved" },
+      { repository }
+    );
+    expect(loaded).toMatchObject({ kind: "protocol", protocol: { pivotState: { selectedAction: { kind: "grounding" }, outcome: { status: "completed" } } } });
+    if (loaded.kind !== "protocol" || !loaded.protocol.pivotState || typeof loaded.protocol.pivotState !== "object") return;
+    expect(loaded.protocol.pivotState).not.toHaveProperty("recommendation");
+    expect(loaded.protocol.pivotState).not.toHaveProperty("miniPlan");
   });
 
   it("replays a saved outcome without enriching it twice", async () => {

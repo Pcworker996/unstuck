@@ -258,7 +258,25 @@ export async function runGoogleProtocolCommand(
     result = { kind: "ok", state: await persistGoogleDerivedMemory(result.state, dependencies.adaptation.memoryRepository, dependencies.adaptation.embed, input.subject, input.protocolId) };
   }
 
-  const nextState = { ...result.state, version: existing.version + 1 };
+  const nextState = { ...stateForPersistence(result.state), version: existing.version + 1 };
+  if (nextState.phase === "outcome" && !nextState.saveRequested) {
+    try {
+      const deleted = await dependencies.repository.delete({
+        protocolId: input.protocolId,
+        ownerSubject: input.subject
+      });
+      if (!deleted) {
+        return { kind: "not-found" };
+      }
+    } catch {
+      return {
+        kind: "dependency-unavailable",
+        message: "The unsaved Check-in could not be cleared; please try again before leaving this page.",
+        state: nextState
+      };
+    }
+    return { kind: "state", state: nextState, replayed: false };
+  }
   let saved: GoogleProtocolMutation;
   try {
     saved = await dependencies.repository.saveState({
@@ -333,7 +351,7 @@ function mayUsePlatform(command: GooglePivotCommand, current: Extract<GooglePivo
   if (command.type === "record-step-feedback") {
     const miniPlan = current.miniPlan;
     if (current.phase !== "selected" || !miniPlan) return false;
-    return miniPlan.stepNumber <= miniPlan.maxSteps;
+    return miniPlan.stepNumber <= miniPlan.maxSteps && miniPlan.feedback.length < miniPlan.stepNumber;
   }
   if (command.type === "exclude-memory" || command.type === "forget-memory" || command.type === "delete-memory") {
     return hasAdaptation && current.memoryExplanations.some((memory) => memory.memoryId === command.memoryId);
@@ -354,6 +372,20 @@ function stateAfterPersistenceFailure(state: Extract<GooglePivotResult, { kind: 
     derivedMemory: undefined,
     fallback: true,
     activity: [...state.activity, { kind: "fallback", message: "The private protocol store is temporarily unavailable; this valid state can be retried." }]
+  };
+}
+
+function stateForPersistence(
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
+): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
+  if (state.phase !== "outcome" || !state.saveRequested) return state;
+  const { recommendation: _recommendation, miniPlan: _miniPlan, ...retained } = state;
+  return {
+    ...retained,
+    situationMap: {
+      ...retained.situationMap,
+      pivotHistory: retained.situationMap.pivotHistory.filter((item) => !item.id.startsWith("pivot-step-"))
+    }
   };
 }
 

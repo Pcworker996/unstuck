@@ -1206,6 +1206,9 @@ async function recordStepFeedback(
   if (!isValidPivotStepFeedback(feedback)) {
     return { kind: "invalid-command", message: "The Pivot step feedback is invalid." };
   }
+  if (current.miniPlan.feedback.length >= current.miniPlan.stepNumber) {
+    return { kind: "invalid-command", message: "The three-step Pivot mini-plan is complete." };
+  }
 
   const currentAction = current.miniPlan.currentAction;
   const feedbackHistory = [...current.miniPlan.feedback, feedback];
@@ -1376,9 +1379,15 @@ async function adaptOutput({
         ...(toolState ? { memoryTool: toolState.tool } : {})
       });
     }
+    const toolWasSkipped = Boolean(generator.usesMemoryTool && !reuseMemories && toolState && !toolState.wasCalled());
     const toolMemories = toolState?.memories() ?? [];
+    const fallbackMemories = toolWasSkipped
+      ? await retrieveMemories(adaptation, currentDerivedContext, excludedMemoryIds)
+      : [];
     const resolvedMemories = sanitizeRetrievedMemories(
-      generator.usesMemoryTool && !reuseMemories ? toolMemories : memories,
+      toolWasSkipped
+        ? fallbackMemories
+        : generator.usesMemoryTool && !reuseMemories ? toolMemories : memories,
       excludedMemoryIds
     );
     const explanations = resolvedMemories.map((memory) => ({
@@ -1387,9 +1396,11 @@ async function adaptOutput({
       text: `A saved Check-in used “${memory.selectedActionTitle ?? memory.selectedPivotTitle}” and was marked ${memory.outcome.status}.`
     }));
     if (resolvedMemories.length === 0 && guidancePreferences.length === 0) {
-      return { output: baseOutput, status: "no-match", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: Boolean(reuseMemories || toolState?.wasCalled() || !generator.usesMemoryTool) };
+      return { output: baseOutput, status: "no-match", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: Boolean(reuseMemories || toolState?.wasCalled() || toolWasSkipped || !generator.usesMemoryTool) };
     }
-    adaptedOutput ??= fallbackAdaptation(situationMap, resolvedMemories, guidancePreferences);
+    adaptedOutput = toolWasSkipped
+      ? fallbackAdaptation(situationMap, resolvedMemories, guidancePreferences)
+      : adaptedOutput ?? fallbackAdaptation(situationMap, resolvedMemories, guidancePreferences);
     const output = validatedGeneratedOutput(adaptedOutput, situationMap);
     const preservedMap = preserveAcceptedMapItems(output.situationMap, situationMap, []);
     return {
@@ -1401,7 +1412,7 @@ async function adaptOutput({
       explanations,
       preferenceIds: guidancePreferences.map((preference) => preference.id),
       memories: [...resolvedMemories],
-      retrievalAttempted: Boolean(reuseMemories || toolState?.wasCalled() || !generator.usesMemoryTool)
+      retrievalAttempted: Boolean(reuseMemories || toolState?.wasCalled() || toolWasSkipped || !generator.usesMemoryTool)
     };
   } catch {
     return { output: { ...fallbackOutput("", situationMap), situationMap }, status: "unavailable", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: true };
@@ -1430,6 +1441,7 @@ function createMemoryRetrievalTool(
   let retrieved: readonly GoogleRetrievedMemory[] = [];
   const tool: GoogleMemoryRetrievalTool = {
     async retrieveSimilarMemories() {
+      if (called) throw new Error("Only one retrieval is permitted per Check-in.");
       called = true;
       retrieved = await retrieveMemories(adaptation, currentDerivedContext, adaptation.excludedMemoryIds ?? []);
       return sanitizeRetrievedMemories(retrieved, adaptation.excludedMemoryIds ?? []);

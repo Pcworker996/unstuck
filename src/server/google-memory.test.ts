@@ -154,9 +154,11 @@ describe("Google memory boundary", () => {
       async prepareMemory() { return "A current synthetic context."; },
       async adapt({ situationMap, memoryTool }) {
         toolCalls += 1;
-        const memories = await memoryTool?.retrieveSimilarMemories();
+        if (!memoryTool) throw new Error("The strict memory tool was not supplied.");
+        const memories = await memoryTool.retrieveSimilarMemories();
         expect(memories).toHaveLength(1);
         expect(memories?.[0]).not.toHaveProperty("similarity");
+        await expect(memoryTool.retrieveSimilarMemories()).rejects.toThrow(/one retrieval/i);
         return {
           situationMap,
           primaryPivotKind: "task-first-step",
@@ -181,6 +183,63 @@ describe("Google memory boundary", () => {
       kind: "pivot-protocol",
       retrievalAttempted: true,
       retrievedMemories: [{ id: "prior-memory", selectedActionTitle: "Open only the form with the nearest deadline" }]
+    });
+  });
+
+  it("performs the required server retrieval when Gemini omits the strict tool call", async () => {
+    const repository = createInMemoryGoogleMemoryRepository();
+    await repository.saveDerivedMemory({
+      ownerSubject: "person-1",
+      protocolId: "prior-protocol",
+      memoryId: "prior-memory",
+      context: "A synthetic small action helped.",
+      embedding: vector(1),
+      selectedPivotKind: "task-first-step",
+      selectedPivotTitle: "Make the next step visible",
+      outcome: { status: "completed" },
+      approved: true
+    });
+    let retrievals = 0;
+    const generator: GooglePivotGenerator = {
+      usesMemoryTool: true,
+      async generate({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "grounding",
+          alternativePivotKinds: ["breathing-focus", "reaching-out"],
+          whyThisPivot: "A bounded starting point."
+        };
+      },
+      async prepareMemory() { return "A current synthetic context."; },
+      async adapt({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "grounding",
+          alternativePivotKinds: ["breathing-focus", "reaching-out"],
+          whyThisPivot: "The model omitted the tool call."
+        };
+      }
+    };
+
+    const result = await runGooglePivotProtocol({
+      quickDump: "I am stuck on a synthetic task.",
+      consentGiven: true
+    }, generator, {
+      ownerSubject: "person-1",
+      embed: async () => vector(1),
+      retrieveSimilarMemories: async (input) => {
+        retrievals += 1;
+        return repository.retrieveSimilarMemories(input);
+      },
+      listGuidancePreferences: (ownerSubject) => repository.listGuidancePreferences(ownerSubject)
+    });
+
+    expect(retrievals).toBe(1);
+    expect(result).toMatchObject({
+      kind: "pivot-protocol",
+      retrievalAttempted: true,
+      adaptationStatus: "personalized",
+      retrievedMemories: [{ id: "prior-memory" }]
     });
   });
 

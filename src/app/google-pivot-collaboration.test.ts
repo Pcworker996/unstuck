@@ -81,14 +81,22 @@ describe("collaborative Google Pivot Protocol", () => {
     if (finalStep.kind !== "ok") return;
     expect(finalStep.state.miniPlan).toMatchObject({ stepNumber: 3, currentAction: { title: "Synthetic step 3" }, feedback: [{ status: "completed" }, { status: "blocked", note: "Synthetic blocker" }] });
 
-    const capped = await runGooglePivotCommand(finalStep.state, {
+    const completedFinalStep = await runGooglePivotCommand(finalStep.state, {
       type: "record-step-feedback",
       feedback: { status: "partly-helpful" }
     }, generator);
-    expect(capped.kind).toBe("ok");
-    if (capped.kind !== "ok") return;
-    expect(capped.state.miniPlan?.stepNumber).toBe(3);
-    expect(capped.state.miniPlan?.feedback).toHaveLength(3);
+    expect(completedFinalStep.kind).toBe("ok");
+    if (completedFinalStep.kind !== "ok") return;
+    expect(completedFinalStep.state.miniPlan?.stepNumber).toBe(3);
+    expect(completedFinalStep.state.miniPlan?.feedback).toHaveLength(3);
+
+    await expect(runGooglePivotCommand(completedFinalStep.state, {
+      type: "record-step-feedback",
+      feedback: { status: "completed" }
+    }, generator)).resolves.toMatchObject({
+      kind: "invalid-command",
+      message: "The three-step Pivot mini-plan is complete."
+    });
     expect(generations).toBe(3);
   });
 
