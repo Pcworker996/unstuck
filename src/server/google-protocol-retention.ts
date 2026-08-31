@@ -12,6 +12,10 @@ export function isTerminalProtocolState(value: unknown): boolean {
   return typeof value === "object" && value !== null && "phase" in value && value.phase === "outcome";
 }
 
+export function isUnsavedTerminalState(value: unknown): boolean {
+  return isTerminalProtocolState(value) && !shouldClearUnsavedExpiry(value);
+}
+
 export function isGoogleProtocolExpired(expiresAt: unknown): boolean {
   if (expiresAt instanceof Date) return expiresAt.getTime() <= Date.now();
   if (typeof expiresAt === "object" && expiresAt !== null && "toDate" in expiresAt && typeof expiresAt.toDate === "function") {

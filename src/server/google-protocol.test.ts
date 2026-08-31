@@ -336,30 +336,7 @@ describe("Google Protocol", () => {
     await expect(loadGoogleProtocol(
       { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
       { repository }
-    )).resolves.toMatchObject({
-      kind: "protocol",
-      protocol: {
-        pivotState: {
-          persistence: "unsaved",
-          outcome: { status: "completed" },
-          checkIn: { quickDump: "" },
-          situationMap: {
-            shared: [],
-            artifactClaims: [],
-            interpretations: [],
-            uncertainties: [],
-            contradictions: [],
-            constraints: [],
-            progress: [],
-            pivotHistory: [],
-            priorPatterns: []
-          },
-          activity: [],
-          retrievedMemories: [],
-          memoryExplanations: []
-        }
-      }
-    });
+    )).resolves.toMatchObject({ kind: "protocol", protocol: { pivotState: undefined } });
     const loaded = await loadGoogleProtocol(
       { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
       { repository }
@@ -373,9 +350,8 @@ describe("Google Protocol", () => {
     )).resolves.toEqual({ kind: "protocols", protocols: [] });
     const stored = await repository.findByIdForOwner({ protocolId: "protocol-unsaved", ownerSubject: "firebase-user-1" });
     expect(JSON.stringify(stored)).not.toContain("This Quick dump must not become history.");
-    expect(stored).toMatchObject({
-      pivotState: { checkIn: { quickDump: "" }, situationMap: { shared: [] } }
-    });
+    expect(stored).not.toHaveProperty("pivotState");
+    expect(JSON.stringify(stored)).not.toContain("shared-1");
     expect(Object.keys(stored?.idempotency ?? {})).toEqual(["outcome"]);
   });
 

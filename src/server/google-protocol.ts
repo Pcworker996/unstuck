@@ -14,7 +14,7 @@ import type { GooglePdfTemporaryStorage } from "../app/google-supporting-artifac
 import { PIVOT_LIBRARY, getPivotByKind } from "../app/pivot-library";
 import type { GoogleQuotaService } from "./google-quotas";
 import type { GoogleTelemetryLogger } from "./google-telemetry";
-import { isGoogleProtocolExpired, isTerminalProtocolState, shouldClearUnsavedExpiry, unsavedProtocolExpiresAt } from "./google-protocol-retention";
+import { isGoogleProtocolExpired, isTerminalProtocolState, isUnsavedTerminalState, shouldClearUnsavedExpiry, unsavedProtocolExpiresAt } from "./google-protocol-retention";
 
 export type GoogleProtocol = {
   id: string;
@@ -568,7 +568,7 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
       const next = {
         ...protocol,
         version: protocol.version + 1,
-        pivotState: state,
+        ...(isUnsavedTerminalState(state) ? { pivotState: undefined } : { pivotState: state }),
         ...(shouldClearUnsavedExpiry(state) ? { expiresAt: undefined } : {}),
         idempotency: isTerminalProtocolState(state)
           ? { [idempotencyKey]: { version: protocol.version + 1, state, fingerprint } }
