@@ -552,6 +552,11 @@ export async function runGooglePivotProtocol(
     fallback = true;
     activity.push({ kind: "fallback", message: "Personalization is unavailable; the accepted Situation map remains usable." });
   }
+  if (fallback && saveRequested) {
+    saveRequested = false;
+    pendingDerivedContext = undefined;
+    activity.push({ kind: "fallback", message: "This fallback Check-in will not be retained as personal history or Derived memory." });
+  }
 
   return {
     kind: "pivot-protocol",
@@ -631,6 +636,15 @@ export type GooglePivotCommandResult =
   | { kind: "dependency-unavailable"; message: string; state: Extract<GooglePivotResult, { kind: "pivot-protocol" }> };
 
 export async function runGooglePivotCommand(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined,
+  command: GooglePivotCommand,
+  generator: GooglePivotGenerator = defaultGenerator,
+  adaptation?: GooglePivotAdaptation
+): Promise<GooglePivotCommandResult> {
+  return normalizeFallbackSavePolicy(await runGooglePivotCommandInternal(current, command, generator, adaptation));
+}
+
+async function runGooglePivotCommandInternal(
   current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined,
   command: GooglePivotCommand,
   generator: GooglePivotGenerator = defaultGenerator,
@@ -840,6 +854,21 @@ export async function runGooglePivotCommand(
     return { kind: "invalid-command", message: "Pivot time must be a non-negative whole number of seconds." };
   }
   return requestOutcomeConfirmation(current, command.outcome);
+}
+
+function normalizeFallbackSavePolicy(result: GooglePivotCommandResult): GooglePivotCommandResult {
+  if (result.kind !== "ok" || !result.state.fallback || !result.state.saveRequested) return result;
+  return {
+    ...result,
+    state: {
+      ...result.state,
+      saveRequested: false,
+      persistence: "unsaved",
+      enrichment: "not-requested",
+      pendingDerivedContext: undefined,
+      derivedMemory: undefined
+    }
+  };
 }
 
 async function recordOutcome(

@@ -361,6 +361,59 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(started).toMatchObject({ kind: "ok", state: { saveRequested: false, persistence: "unsaved" } });
   });
 
+  it("disables saving when a later recommendation falls back", async () => {
+    let generations = 0;
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        generations += 1;
+        if (generations > 1) throw new Error("recommendation unavailable");
+        return output(situationMap);
+      }
+    };
+
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck on a task.",
+      consentGiven: true,
+      saveRequested: true
+    }, generator);
+    expect(started).toMatchObject({ kind: "ok", state: { saveRequested: true, persistence: "pending" } });
+    if (started.kind !== "ok") return;
+
+    const fallback = await runGooglePivotCommand(started.state, {
+      type: "add-context",
+      message: "The first step still feels too large."
+    }, generator);
+
+    expect(fallback).toMatchObject({
+      kind: "ok",
+      state: { fallback: true, saveRequested: false, persistence: "unsaved", pendingDerivedContext: undefined }
+    });
+  });
+
+  it("disables saving when personalization falls back after a saved start", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck on a task.",
+      consentGiven: true,
+      saveRequested: true
+    }, {
+      async generate({ situationMap }) { return output(situationMap); },
+      async adapt() { throw new Error("personalization unavailable"); }
+    }, {
+      ownerSubject: "owner-1",
+      embed: async () => [],
+      retrieveSimilarMemories: async () => [],
+      listGuidancePreferences: async () => [{ id: "preference-1", text: "Keep it concrete.", createdAt: "2026-08-31T00:00:00.000Z" }]
+    });
+
+    expect(started).toMatchObject({
+      kind: "ok",
+      state: { fallback: true, saveRequested: false, persistence: "unsaved" }
+    });
+    if (started.kind === "ok") expect(started.state.pendingDerivedContext).toBeUndefined();
+  });
+
   it("keeps unresolved contradictions while a correction regenerates the map", async () => {
     let generation = 0;
     const generator: GooglePivotGenerator = {
