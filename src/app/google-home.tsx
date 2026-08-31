@@ -5,7 +5,7 @@ import type { FormEvent } from "react";
 
 import { getFirebaseGoogleAuthClient } from "../lib/firebase-google-auth";
 import { googleImageBytesToBase64 } from "./google-image-artifact";
-import type { GoogleConversationalTurn, GooglePendingConfirmation, GooglePivotResult, MapRevision, PivotStepFeedback, SituationMap } from "./google-pivot-protocol";
+import type { GoogleArtifactProcessingState, GoogleConversationalTurn, GooglePendingConfirmation, GooglePivotResult, MapRevision, PivotStepFeedback, SituationMap } from "./google-pivot-protocol";
 
 type Person = {
   id: string;
@@ -393,7 +393,15 @@ function GooglePivotResultView({
 
   return (
     <>
-      <ConversationTimeline turns={result.conversation} undoableUpdates={result.undoableUpdates} onUndo={(updateId) => void command({ type: "undo-update", updateId })} />
+      <ConversationTimeline
+        turns={result.conversation}
+        undoableUpdates={result.undoableUpdates}
+        artifacts={result.artifacts}
+        situationMap={situationMap}
+        canRemoveArtifacts={mapEditable}
+        onUndo={(updateId) => void command({ type: "undo-update", updateId })}
+        onRemoveArtifact={(artifactId) => void command({ type: "remove-artifact", artifactId })}
+      />
       {result.phase !== "outcome" && result.phase !== "dismissed" ? (
         <ConversationComposer
           onSubmit={(message) => void command({ type: "add-context", message })}
@@ -401,12 +409,12 @@ function GooglePivotResultView({
           onCorrect={(correction) => void command(correction)}
         />
       ) : null}
-      {result.artifacts?.length ? (
+      {result.artifacts?.some((artifact) => artifact.status !== "accepted" || !artifact.mimeType?.startsWith("image/")) ? (
         <section className="history-card" aria-label="Supporting artifact processing">
           <p className="eyebrow">Supporting artifacts</p>
-          {result.artifacts.map((artifact) => (
+          {result.artifacts.filter((artifact) => artifact.status !== "accepted" || !artifact.mimeType?.startsWith("image/")).map((artifact) => (
             <p key={artifact.artifactId}>
-              <strong>{artifact.artifactId}:</strong> {artifact.status === "accepted" ? "accepted" : "rejected"}. {artifact.message}
+              <strong>{artifact.artifactId}:</strong> {artifact.status}. {artifact.message}
             </p>
           ))}
         </section>
@@ -686,13 +694,22 @@ function GoogleGuidancePreferences() {
 function ConversationTimeline({
   turns,
   undoableUpdates,
-  onUndo
+  artifacts,
+  situationMap,
+  canRemoveArtifacts,
+  onUndo,
+  onRemoveArtifact
 }: {
   turns: GoogleConversationalTurn[];
   undoableUpdates: Extract<GooglePivotResult, { kind: "pivot-protocol" }>['undoableUpdates'];
+  artifacts: GoogleArtifactProcessingState[];
+  situationMap: SituationMap;
+  canRemoveArtifacts: boolean;
   onUndo: (updateId: string) => void;
+  onRemoveArtifact: (artifactId: string) => void;
 }) {
   const latestUndoableUpdate = undoableUpdates.at(-1);
+  const imageReviews = artifacts.filter((artifact) => artifact.status === "accepted" && artifact.mimeType?.startsWith("image/"));
   return (
     <section className="conversation-timeline" aria-label="Active conversation timeline">
       <p className="eyebrow">This Check-in</p>
@@ -717,6 +734,28 @@ function ConversationTimeline({
               ) : null}
               {canUndo ? <button className="text-button" onClick={() => onUndo(latestUndoableUpdate.id)} type="button">Undo update</button> : null}
             </div>
+          </article>
+        );
+      })}
+      {imageReviews.map((artifact) => {
+        const claims = situationMap.artifactClaims.filter((claim) => artifact.claimIds?.includes(claim.id));
+        return (
+          <article className="artifact-review-card" key={artifact.artifactId} aria-label="Reviewed image">
+            <div>
+              <p className="artifact-review-card__title"><strong>Optional image reviewed</strong></p>
+              <p className="privacy-note">This temporary review card contains bounded artifact claims only. The image and filename are not retained.</p>
+            </div>
+            <details>
+              <summary>{claims.length === 1 ? "Review 1 extracted claim" : `Review ${claims.length} extracted claims`}</summary>
+              {claims.length ? (
+                <ul>
+                  {claims.map((claim) => <li key={claim.id}>{claim.text}</li>)}
+                </ul>
+              ) : <p className="privacy-note">No bounded claims were extracted.</p>}
+            </details>
+            {canRemoveArtifacts ? (
+              <button className="text-button" onClick={() => onRemoveArtifact(artifact.artifactId)} type="button">Remove image and claims</button>
+            ) : null}
           </article>
         );
       })}

@@ -233,6 +233,34 @@ button:disabled {
   color: #c8ecca !important;
 }
 
+.artifact-review-card {
+  align-items: start;
+  border: 1px solid #526258;
+  border-radius: 0.55rem;
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 1rem;
+  padding: 0.85rem;
+}
+
+.artifact-review-card__title {
+  margin: 0;
+}
+
+.artifact-review-card details {
+  color: #b8c4ba;
+  font-size: 0.88rem;
+}
+
+.artifact-review-card summary {
+  color: #c8ecca;
+  cursor: pointer;
+}
+
+.artifact-review-card ul {
+  margin-bottom: 0;
+}
+
 .conversation-composer {
   display: grid;
   gap: 0.7rem;

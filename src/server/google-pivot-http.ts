@@ -217,6 +217,9 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
       return parseStartCommand(body);
     case "add-image":
       return { type, image: parseImageInput(body.image) };
+    case "remove-artifact":
+      if (typeof body.artifactId !== "string" || !body.artifactId.trim()) throw new HttpInputError("An artifact identifier is required.");
+      return { type, artifactId: body.artifactId.trim() };
     case "add-artifact":
       return { type, artifact: parseSupportingArtifactInput(body.artifact) };
     case "add-artifacts":

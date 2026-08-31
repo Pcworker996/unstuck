@@ -180,6 +180,7 @@ export type ActivityEvent = {
     | "artifact-safety-completed"
     | "artifact-accepted"
     | "artifact-rejected"
+    | "artifact-removed"
     | "artifact-approved"
     | "outcome-recorded"
     | "generation"
@@ -245,7 +246,7 @@ export type GooglePivotGenerator = {
 };
 
 export type GoogleImageProcessingState = {
-  status: "not-provided" | "accepted" | "rejected";
+  status: "not-provided" | "accepted" | "rejected" | "removed";
   mimeType?: string;
   claimCount?: number;
   message: string;
@@ -253,10 +254,12 @@ export type GoogleImageProcessingState = {
 
 export type GoogleArtifactProcessingState = {
   artifactId: string;
-  status: "accepted" | "rejected";
+  status: "accepted" | "rejected" | "removed";
   mimeType?: string;
+  byteLength?: number;
   pageCount?: number;
   claimCount?: number;
+  claimIds?: string[];
   message: string;
 };
 
@@ -435,7 +438,9 @@ export async function runGooglePivotProtocol(
       { kind: "fallback", message: "The Quick dump remains sufficient to continue without the image." }
     );
   } else if (imageReview.kind === "accepted") {
+    const priorArtifactClaimCount = situationMap.artifactClaims.length;
     situationMap = addImageClaims(situationMap, imageReview.claims);
+    const imageClaimIds = situationMap.artifactClaims.slice(priorArtifactClaimCount).map((claim) => claim.id);
     imageProcessing = {
       status: "accepted",
       mimeType: imageReview.mimeType,
@@ -451,7 +456,9 @@ export async function runGooglePivotProtocol(
       artifactId: "artifact-image-1",
       status: "accepted",
       mimeType: imageReview.mimeType,
+      byteLength: input.image?.bytes.length ?? 0,
       claimCount: imageReview.claims.length,
+      claimIds: imageClaimIds,
       message: "The image was reviewed and its claims were added as artifact claims."
     }];
     artifactBytes = input.image?.bytes.length ?? 0;
@@ -603,6 +610,7 @@ export async function runGooglePivotProtocol(
 export type GooglePivotCommand =
   | { type: "start"; quickDump: string; consentGiven: boolean; saveRequested?: boolean; image?: GoogleImageArtifactInput; artifacts?: GoogleSupportingArtifactInput[] }
   | { type: "add-image"; image: GoogleImageArtifactInput }
+  | { type: "remove-artifact"; artifactId: string }
   | { type: "add-artifact"; artifact: GoogleSupportingArtifactInput }
   | { type: "add-artifacts"; artifacts: GoogleSupportingArtifactInput[] }
   | { type: "add-context"; message: string }
@@ -698,6 +706,10 @@ async function runGooglePivotCommandInternal(
       return { kind: "invalid-command", message: "Only one image can be added to a Situation." };
     }
     return addImageToProtocol(current, command.image, generator, adaptation);
+  }
+
+  if (command.type === "remove-artifact") {
+    return removeArtifactFromProtocol(current, command.artifactId, generator, adaptation);
   }
 
   if (command.type === "add-artifact" || command.type === "add-artifacts") {
@@ -1010,7 +1022,9 @@ async function addImageToProtocol(
     return { kind: "invalid-command", message: "An image is required." };
   }
 
+  const priorArtifactClaimCount = current.situationMap.artifactClaims.length;
   const situationMap = addImageClaims(current.situationMap, review.claims);
+  const imageClaimIds = situationMap.artifactClaims.slice(priorArtifactClaimCount).map((claim) => claim.id);
   const generation = await generateAdaptedOutput(
     current.checkIn.quickDump,
     situationMap,
@@ -1038,7 +1052,9 @@ async function addImageToProtocol(
           artifactId,
           status: "accepted",
           mimeType: review.mimeType,
+          byteLength: image.bytes.length,
           claimCount: review.claims.length,
+          claimIds: imageClaimIds,
           message: "The image was reviewed and its claims were added as artifact claims."
         }],
         artifactBytes: (current.artifactBytes ?? 0) + image.bytes.length,
@@ -1055,6 +1071,67 @@ async function addImageToProtocol(
         { kind: "artifact-accepted", message: "The image claims were added to the Situation map as artifact claims." },
         { kind: "generation", message: "The recommendation was updated from accepted artifact claims." },
         ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted Situation map." }] : [])
+      ]
+    }
+  };
+}
+
+async function removeArtifactFromProtocol(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  artifactId: string,
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
+): Promise<GooglePivotCommandResult> {
+  if (!isSituationMapEditable(current.phase)) return mapEditPhaseError();
+  const artifact = current.artifacts?.find((candidate) => candidate.artifactId === artifactId);
+  if (!artifact || artifact.status !== "accepted" || !artifact.mimeType?.startsWith("image/")) {
+    return { kind: "invalid-command", message: "That image review card no longer exists." };
+  }
+
+  const claimIds = new Set(artifact.claimIds ?? []);
+  const situationMap = {
+    ...current.situationMap,
+    artifactClaims: current.situationMap.artifactClaims.filter((claim) => !claimIds.has(claim.id))
+  };
+  const generation = await generateAdaptedOutput(
+    current.checkIn.quickDump,
+    situationMap,
+    generator,
+    current.clarification?.answers,
+    adaptationForState(adaptation, current),
+    current.retrievalAttempted ? current.retrievedMemories : undefined
+  );
+  const message = "The image and its claims were removed from this Check-in.";
+  return {
+    kind: "ok",
+    state: {
+      ...current,
+      phase: "recommended",
+      selectedPivot: undefined,
+      selectedAction: undefined,
+      outcome: undefined,
+      situationMap: preserveAcceptedMapItems(generation.output.situationMap, situationMap, current.revisions),
+      recommendation: recommendationFromOutput(generation.output),
+      imageProcessing: {
+        status: "removed",
+        message
+      },
+      artifacts: current.artifacts.map((candidate) => candidate.artifactId === artifactId
+        ? { ...candidate, status: "removed" as const, claimIds: [], message }
+        : candidate),
+      artifactBytes: Math.max(0, (current.artifactBytes ?? 0) - (artifact.byteLength ?? 0)),
+      approvedArtifactClaimIds: (current.approvedArtifactClaimIds ?? []).filter((id) => !claimIds.has(id)),
+      memoryExplanations: generation.explanations,
+      retrievedMemories: generation.memories,
+      retrievalAttempted: generation.retrievalAttempted,
+      adaptationStatus: generation.status,
+      guidancePreferenceIds: generation.preferenceIds,
+      fallback: current.fallback || generation.fallback,
+      activity: [
+        ...current.activity,
+        { kind: "artifact-removed", message: "The accepted image and its claims were removed from the current Check-in." },
+        { kind: "generation", message: "The recommendation was updated after the image was removed." },
+        ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the Situation map without the image." }] : [])
       ]
     }
   };
@@ -2201,6 +2278,14 @@ function adaptationMap(situationMap: SituationMap): SituationMap {
   };
 }
 
+function avoidsBreathing(preferences: readonly GoogleGuidancePreference[]): boolean {
+  return preferences.some((preference) => /avoid.*breath|not.*breath/i.test(preference.text));
+}
+
+function isUsablePivotKind(kind: PivotKind, cautionaryKinds: ReadonlySet<PivotKind>, avoidBreathing: boolean): boolean {
+  return !cautionaryKinds.has(kind) && !(avoidBreathing && kind === "breathing-focus");
+}
+
 function fallbackAdaptation(
   situationMap: SituationMap,
   memories: readonly GoogleRetrievedMemory[],
@@ -2208,13 +2293,13 @@ function fallbackAdaptation(
 ): GooglePivotGeneratorOutput {
   const helpfulMemory = memories.find(isStrongHelpfulMemory);
   const cautionaryKinds = cautionaryMemoryKinds(memories);
-  const avoidBreathing = preferences.some((preference) => /avoid.*breath|not.*breath/i.test(preference.text));
+  const avoidBreathing = avoidsBreathing(preferences);
   const preferred = helpfulMemory
     ? requirePivot(helpfulMemory.selectedPivotKind)
     : preferredPivot(situationMap.shared.map((item) => item.text).join(" "));
-  const primary = !(avoidBreathing && preferred.kind === "breathing-focus") && !cautionaryKinds.has(preferred.kind)
+  const primary = isUsablePivotKind(preferred.kind, cautionaryKinds, avoidBreathing)
     ? preferred
-    : PIVOT_LIBRARY.find((pivot) => !cautionaryKinds.has(pivot.kind) && !(avoidBreathing && pivot.kind === "breathing-focus")) ?? preferred;
+    : PIVOT_LIBRARY.find((pivot) => isUsablePivotKind(pivot.kind, cautionaryKinds, avoidBreathing)) ?? preferred;
   const alternatives = [
     ...PIVOT_LIBRARY.filter((pivot) => pivot.kind !== primary.kind && !cautionaryKinds.has(pivot.kind)),
     ...PIVOT_LIBRARY.filter((pivot) => pivot.kind !== primary.kind && cautionaryKinds.has(pivot.kind))
@@ -2253,8 +2338,8 @@ function applyOutcomeSignals(
     return output;
   }
 
-  const avoidBreathing = preferences.some((preference) => /avoid.*breath|not.*breath/i.test(preference.text));
-  const isUsable = (kind: PivotKind) => !cautionaryKinds.has(kind) && !(avoidBreathing && kind === "breathing-focus");
+  const avoidBreathing = avoidsBreathing(preferences);
+  const isUsable = (kind: PivotKind) => isUsablePivotKind(kind, cautionaryKinds, avoidBreathing);
 
   const actionByKind = new Map<PivotKind, SituationalPivotAction>();
   if (output.primaryAction) actionByKind.set(primaryKindValue, output.primaryAction);
@@ -2728,8 +2813,10 @@ async function reviewSupportingArtifacts(
           artifactId: result.artifactId,
           status: "accepted",
           mimeType: result.mimeType,
+          byteLength: inputs[index].bytes.length,
           pageCount: result.pageCount,
           claimCount: result.claims.length,
+          claimIds: result.claims.map((_, claimIndex) => `artifact-claim-${result.artifactId}-${claimIndex + 1}`),
           message: "The artifact claims passed Safety and are available as artifact claims."
         }
       : { artifactId: result.artifactId, status: "rejected" as const, message: result.message };

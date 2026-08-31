@@ -548,6 +548,85 @@ describe("Google Pivot Protocol", () => {
     expect(added.state.phase).toBe("recommended");
   });
 
+  it("removes an accepted image review and regenerates without its claims", async () => {
+    let generationCount = 0;
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap }) {
+        generationCount += 1;
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          whyThisPivot: "A bounded next step."
+        };
+      },
+      async extractImageClaims() {
+        return { claims: [{ text: "The checklist has three unchecked items." }] };
+      }
+    };
+    const started = await runGooglePivotProtocol({
+      quickDump: "Moving feels like too much.",
+      consentGiven: true,
+      image: { bytes: jpegBytes() }
+    }, generator);
+    expect(started.kind).toBe("pivot-protocol");
+    if (started.kind !== "pivot-protocol") return;
+
+    const removed = await runGooglePivotCommand(started, {
+      type: "remove-artifact",
+      artifactId: "artifact-image-1"
+    }, generator);
+
+    expect(removed.kind).toBe("ok");
+    if (removed.kind !== "ok") return;
+    expect(generationCount).toBe(2);
+    expect(removed.state.situationMap.artifactClaims).toEqual([]);
+    expect(removed.state.artifacts).toEqual([expect.objectContaining({
+      artifactId: "artifact-image-1",
+      status: "removed",
+      claimIds: []
+    })]);
+    expect(removed.state.imageProcessing).toMatchObject({
+      status: "removed",
+      message: "The image and its claims were removed from this Check-in."
+    });
+    expect(removed.state.artifactBytes).toBe(0);
+    expect(removed.state.activity).toContainEqual({
+      kind: "artifact-removed",
+      message: "The accepted image and its claims were removed from the current Check-in."
+    });
+  });
+
+  it("tracks and removes an image submitted through the supporting-artifact picker", async () => {
+    const generator: GooglePivotGenerator = {
+      async extractSupportingArtifactClaims() {
+        return { claims: [{ text: "The image contains a response deadline." }] };
+      },
+      async generate({ situationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          whyThisPivot: "A bounded next step."
+        };
+      }
+    };
+    const started = await runGooglePivotProtocol({
+      quickDump: "I am stuck on a normal task.",
+      consentGiven: true,
+      artifacts: [{ bytes: jpegBytes() }]
+    }, generator);
+    expect(started.kind).toBe("pivot-protocol");
+    if (started.kind !== "pivot-protocol") return;
+    expect(started.artifacts[0]).toMatchObject({ mimeType: "image/jpeg", claimIds: ["artifact-claim-artifact-1-1"] });
+
+    const removed = await runGooglePivotCommand(started, { type: "remove-artifact", artifactId: "artifact-1" }, generator);
+    expect(removed.kind).toBe("ok");
+    if (removed.kind !== "ok") return;
+    expect(removed.state.situationMap.artifactClaims).toEqual([]);
+    expect(removed.state.artifacts[0].status).toBe("removed");
+  });
+
   it("requires explicit approval before an image claim can enter saved map state", async () => {
     const generator: GooglePivotGenerator = {
       async generate({ situationMap }) {

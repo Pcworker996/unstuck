@@ -147,6 +147,52 @@ describe("Google Pivot HTTP interface", () => {
     expect(JSON.stringify(body)).not.toContain("private-landlord-message.jpg");
   });
 
+  it("accepts a removal command for an accepted image review", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+    const generator = {
+      async generate({ situationMap }: { situationMap: import("../app/google-pivot-protocol").SituationMap }) {
+        return { situationMap, primaryPivotKind: "task-first-step", alternativePivotKinds: ["grounding", "reaching-out"], whyThisPivot: "A bounded next step." };
+      },
+      async extractImageClaims() {
+        return { claims: [{ text: "The message asks for a response." }] };
+      }
+    };
+    const start = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1", expectedVersion: 0, idempotencyKey: "image-start",
+          quickDump: "I am stuck on moving paperwork.", consentGiven: true,
+          image: { base64: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 2, 0xff, 0xd9]).toString("base64"), mimeType: "image/jpeg" }
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }), repository, generator
+    );
+    expect(start.status).toBe(200);
+
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({
+          protocolId: "protocol-1", expectedVersion: 1, idempotencyKey: "image-remove",
+          type: "remove-artifact", artifactId: "artifact-image-1"
+        })
+      }),
+      async () => ({ subject: "firebase-user-1" }), repository, generator
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "pivot-protocol",
+      imageProcessing: { status: "removed" },
+      situationMap: { artifactClaims: [] }
+    });
+  });
+
   it("continues through a mixed JSON artifact batch and persists only content-free artifact state", async () => {
     const repository = createInMemoryGoogleProtocolRepository();
     await startGoogleProtocol(

@@ -345,6 +345,7 @@ function mayUsePlatform(command: GooglePivotCommand, current: Extract<GooglePivo
   if (!current) return false;
   if (command.type === "add-context") return isActiveConversationPhase(current.phase) && Boolean(command.message.trim());
   if (command.type === "add-image") return current.imageProcessing.status !== "accepted" && isEditablePhase(current.phase);
+  if (command.type === "remove-artifact") return isEditablePhase(current.phase) && current.artifacts.some((artifact) => artifact.artifactId === command.artifactId && artifact.status === "accepted" && artifact.mimeType?.startsWith("image/"));
   if (command.type === "add-artifact" || command.type === "add-artifacts") return isEditablePhase(current.phase);
   if (command.type === "answer-clarification" || command.type === "skip-clarification") {
     return current.phase === "clarifying" && current.clarification?.question.id === command.questionId && current.clarification.answers.length < 2 && (command.type === "skip-clarification" || Boolean(command.answer.trim()));
@@ -688,6 +689,18 @@ function normalizePivotState(
         alternativeActions: state.recommendation.alternativeActions ?? state.recommendation.alternatives.map(defaultSituationalActionForPivot)
       }
     : undefined;
+  const artifacts = (state.artifacts ?? []).map((artifact) => {
+    if (artifact.status !== "accepted" || !artifact.mimeType?.startsWith("image/") || artifact.claimIds) return artifact;
+    const claimPrefix = artifact.artifactId.startsWith("artifact-image-")
+      ? "artifact-image-"
+      : `artifact-claim-${artifact.artifactId}-`;
+    return {
+      ...artifact,
+      claimIds: state.situationMap.artifactClaims
+        .filter((claim) => claim.id.startsWith(claimPrefix))
+        .map((claim) => claim.id)
+    };
+  });
   return {
     ...state,
     conversation: state.conversation ?? [],
@@ -701,7 +714,7 @@ function normalizePivotState(
     guidancePreferenceIds: state.guidancePreferenceIds ?? [],
     approvedArtifactClaimIds: state.approvedArtifactClaimIds ?? [],
     imageProcessing: state.imageProcessing ?? { status: "not-provided", message: "No image was added." },
-    artifacts: state.artifacts ?? [],
+    artifacts,
     artifactBytes: state.artifactBytes ?? 0
   };
 }
