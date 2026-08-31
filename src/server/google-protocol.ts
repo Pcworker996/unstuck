@@ -30,6 +30,15 @@ type IdempotencyLookup =
   | { kind: "match"; protocol: StoredGoogleProtocol }
   | { kind: "conflict"; protocol: StoredGoogleProtocol };
 
+type UnsavedOutcomeReplay = {
+  fingerprint: string;
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>;
+  expiresAt: number;
+};
+
+const UNSAVED_OUTCOME_REPLAY_WINDOW_MS = 5 * 60 * 1000;
+const unsavedOutcomeReplays = new Map<string, UnsavedOutcomeReplay>();
+
 export type GoogleProtocolMutation =
   | { kind: "saved"; protocol: GoogleProtocol }
   | { kind: "conflict"; protocol: GoogleProtocol }
@@ -169,8 +178,17 @@ export async function runGoogleProtocolCommand(
   generator?: GooglePivotGenerator
 ): Promise<GoogleProtocolCommandResult> {
   if (input.command.type === "start") {
+    clearUnsavedOutcomeReplays(input.subject, input.protocolId);
+  }
+  if (input.command.type === "start") {
     const safetyResult = googlePivotSafetyResult(input.command.quickDump);
     if (safetyResult) return { kind: "safety-interruption", result: safetyResult };
+  }
+
+  const fingerprint = commandFingerprint(input.command);
+  const unsavedReplay = findUnsavedOutcomeReplay(input, fingerprint);
+  if (unsavedReplay) {
+    return { kind: "state", state: unsavedReplay, replayed: true };
   }
 
   let existing: StoredGoogleProtocol | undefined;
@@ -196,7 +214,7 @@ export async function runGoogleProtocolCommand(
       protocolId: input.protocolId,
       ownerSubject: input.subject,
       idempotencyKey: input.idempotencyKey,
-      fingerprint: commandFingerprint(input.command)
+    fingerprint
     });
   } catch {
     return {
@@ -275,6 +293,7 @@ export async function runGoogleProtocolCommand(
         state: nextState
       };
     }
+    rememberUnsavedOutcomeReplay(input, fingerprint, nextState);
     return { kind: "state", state: nextState, replayed: false };
   }
   let saved: GoogleProtocolMutation;
@@ -385,8 +404,49 @@ function stateForPersistence(
     situationMap: {
       ...retained.situationMap,
       pivotHistory: retained.situationMap.pivotHistory.filter((item) => !item.id.startsWith("pivot-step-"))
-    }
+    },
+    activity: retained.activity.filter((event) =>
+      event.kind !== "step-feedback"
+      && event.message !== "The next situational Pivot action was generated from the person's feedback."
+    )
   };
+}
+
+function unsavedOutcomeReplayKey(input: { subject: string; protocolId: string; idempotencyKey: string }): string {
+  return `${input.subject}:${input.protocolId}:${input.idempotencyKey}`;
+}
+
+function findUnsavedOutcomeReplay(
+  input: { subject: string; protocolId: string; idempotencyKey: string },
+  fingerprint: string
+): Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined {
+  const key = unsavedOutcomeReplayKey(input);
+  const replay = unsavedOutcomeReplays.get(key);
+  if (!replay) return undefined;
+  if (replay.expiresAt <= Date.now()) {
+    unsavedOutcomeReplays.delete(key);
+    return undefined;
+  }
+  return replay.fingerprint === fingerprint ? replay.state : undefined;
+}
+
+function rememberUnsavedOutcomeReplay(
+  input: { subject: string; protocolId: string; idempotencyKey: string },
+  fingerprint: string,
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
+): void {
+  unsavedOutcomeReplays.set(unsavedOutcomeReplayKey(input), {
+    fingerprint,
+    state,
+    expiresAt: Date.now() + UNSAVED_OUTCOME_REPLAY_WINDOW_MS
+  });
+}
+
+function clearUnsavedOutcomeReplays(subject: string, protocolId: string): void {
+  const prefix = `${subject}:${protocolId}:`;
+  for (const key of unsavedOutcomeReplays.keys()) {
+    if (key.startsWith(prefix)) unsavedOutcomeReplays.delete(key);
+  }
 }
 
 function adaptationFor(input: {

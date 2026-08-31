@@ -1384,6 +1384,7 @@ async function adaptOutput({
     const fallbackMemories = toolWasSkipped
       ? await retrieveMemories(adaptation, currentDerivedContext, excludedMemoryIds)
       : [];
+    const retrievalAttempted = Boolean(reuseMemories || toolState?.wasCalled() || toolWasSkipped || !generator.usesMemoryTool);
     const resolvedMemories = sanitizeRetrievedMemories(
       toolWasSkipped
         ? fallbackMemories
@@ -1396,7 +1397,7 @@ async function adaptOutput({
       text: `A saved Check-in used “${memory.selectedActionTitle ?? memory.selectedPivotTitle}” and was marked ${memory.outcome.status}.`
     }));
     if (resolvedMemories.length === 0 && guidancePreferences.length === 0) {
-      return { output: baseOutput, status: "no-match", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: Boolean(reuseMemories || toolState?.wasCalled() || toolWasSkipped || !generator.usesMemoryTool) };
+      return { output: baseOutput, status: "no-match", explanations: [], preferenceIds: [], memories: [], retrievalAttempted };
     }
     adaptedOutput = toolWasSkipped
       ? fallbackAdaptation(situationMap, resolvedMemories, guidancePreferences)
@@ -1412,7 +1413,7 @@ async function adaptOutput({
       explanations,
       preferenceIds: guidancePreferences.map((preference) => preference.id),
       memories: [...resolvedMemories],
-      retrievalAttempted: Boolean(reuseMemories || toolState?.wasCalled() || toolWasSkipped || !generator.usesMemoryTool)
+      retrievalAttempted
     };
   } catch {
     return { output: { ...fallbackOutput("", situationMap), situationMap }, status: "unavailable", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: true };

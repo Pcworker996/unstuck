@@ -302,10 +302,15 @@ describe("Google Protocol", () => {
       subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 1, idempotencyKey: "select",
       command: { type: "select-pivot", pivotKind: "grounding" }
     }, { repository });
+    const outcome = await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 2, idempotencyKey: "outcome",
+      command: { type: "record-outcome", outcome: { status: "completed" } }
+    }, { repository });
+    expect(outcome).toMatchObject({ kind: "state", replayed: false, state: { persistence: "unsaved" } });
     await expect(runGoogleProtocolCommand({
       subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 2, idempotencyKey: "outcome",
       command: { type: "record-outcome", outcome: { status: "completed" } }
-    }, { repository })).resolves.toMatchObject({ kind: "state", state: { persistence: "unsaved" } });
+    }, { repository })).resolves.toMatchObject({ kind: "state", replayed: true, state: { persistence: "unsaved" } });
 
     await expect(loadGoogleProtocol(
       { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
@@ -345,6 +350,12 @@ describe("Google Protocol", () => {
     if (loaded.kind !== "protocol" || !loaded.protocol.pivotState || typeof loaded.protocol.pivotState !== "object") return;
     expect(loaded.protocol.pivotState).not.toHaveProperty("recommendation");
     expect(loaded.protocol.pivotState).not.toHaveProperty("miniPlan");
+    expect(loaded.protocol.pivotState).toMatchObject({
+      activity: expect.not.arrayContaining([
+        expect.objectContaining({ kind: "step-feedback" }),
+        expect.objectContaining({ message: "The next situational Pivot action was generated from the person's feedback." })
+      ])
+    });
   });
 
   it("replays a saved outcome without enriching it twice", async () => {
