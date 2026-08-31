@@ -549,15 +549,22 @@ function memoryControlCase(): EvaluationDefinition {
       });
       const generator = deterministicGenerator();
       const first = await runGooglePivotProtocol({ quickDump: "I am stuck on a normal task.", consentGiven: true }, generator, adaptation);
-      if (first.kind !== "pivot-protocol" || first.memoryExplanations.length < 2) return { started: false, exclusionRecorded: false, forgetRecorded: false, excludedNoLongerExplained: false, controlPreservesProtocol: false };
+      if (first.kind !== "pivot-protocol" || first.memoryExplanations.length < 2) return { started: false, confirmationRequired: false, exclusionRecorded: false, forgetRecorded: false, excludedNoLongerExplained: false, controlPreservesProtocol: false };
       const excludedState = await runGooglePivotCommand(first, { type: "exclude-memory", memoryId: first.memoryExplanations[0].memoryId }, generator, adaptation);
-      if (excludedState.kind !== "ok") return { started: false, exclusionRecorded: false, forgetRecorded: false, excludedNoLongerExplained: false, controlPreservesProtocol: false };
+      if (excludedState.kind !== "ok") return { started: false, confirmationRequired: false, exclusionRecorded: false, forgetRecorded: false, excludedNoLongerExplained: false, controlPreservesProtocol: false };
       const remaining = excludedState.state.memoryExplanations.find((memory) => memory.memoryId !== first.memoryExplanations[0].memoryId);
-      if (!remaining) return { started: false, exclusionRecorded: false, forgetRecorded: false, excludedNoLongerExplained: false, controlPreservesProtocol: false };
-      const forgottenState = await runGooglePivotCommand(excludedState.state, { type: "forget-memory", memoryId: remaining.memoryId }, generator, adaptation);
+      if (!remaining) return { started: false, confirmationRequired: false, exclusionRecorded: false, forgetRecorded: false, excludedNoLongerExplained: false, controlPreservesProtocol: false };
+      const forgetRequested = await runGooglePivotCommand(excludedState.state, { type: "forget-memory", memoryId: remaining.memoryId }, generator, adaptation);
+      const forgottenState = forgetRequested.kind === "ok"
+        ? await runGooglePivotCommand(forgetRequested.state, {
+          type: "confirm-action",
+          confirmationId: forgetRequested.state.pendingConfirmation?.id ?? "missing"
+        }, generator, adaptation)
+        : forgetRequested;
       return {
         started: true,
         exclusionRecorded: excluded.includes(first.memoryExplanations[0].memoryId),
+        confirmationRequired: forgetRequested.kind === "ok" && forgetRequested.state.pendingConfirmation?.kind === "forget-memory" && forgottenState.kind === "ok" && forgottenState.state.pendingConfirmation === undefined,
         forgetRecorded: forgotten.includes(remaining.memoryId),
         excludedNoLongerExplained: !excludedState.state.memoryExplanations.some((memory) => memory.memoryId === first.memoryExplanations[0].memoryId),
         controlPreservesProtocol: forgottenState.kind === "ok"

@@ -5,7 +5,7 @@ import type { FormEvent } from "react";
 
 import { getFirebaseGoogleAuthClient } from "../lib/firebase-google-auth";
 import { googleImageBytesToBase64 } from "./google-image-artifact";
-import type { GooglePivotResult, PivotStepFeedback, SituationMap } from "./google-pivot-protocol";
+import type { GoogleConversationalTurn, GooglePendingConfirmation, GooglePivotResult, PivotStepFeedback, SituationMap } from "./google-pivot-protocol";
 
 type Person = {
   id: string;
@@ -82,6 +82,7 @@ export function GoogleHome() {
 
   async function discardProtocol() {
     if (!person || !protocol) return;
+    if (!window.confirm("Discard this Check-in and its temporary conversation?")) return;
     try {
       await deleteGoogleHistory(protocol.id);
       await replaceWithNewProtocol("The incomplete Check-in was discarded.");
@@ -389,6 +390,34 @@ function GooglePivotResultView({
 
   return (
     <>
+      <ConversationTimeline turns={result.conversation} undoableUpdates={result.undoableUpdates} onUndo={(updateId) => void command({ type: "undo-update", updateId })} />
+      {result.phase !== "outcome" && result.phase !== "dismissed" ? <ConversationComposer onSubmit={(message) => void command({ type: "add-context", message })} /> : null}
+      {result.artifacts?.length ? (
+        <section className="history-card" aria-label="Supporting artifact processing">
+          <p className="eyebrow">Supporting artifacts</p>
+          {result.artifacts.map((artifact) => (
+            <p key={artifact.artifactId}>
+              <strong>{artifact.artifactId}:</strong> {artifact.status === "accepted" ? "accepted" : "rejected"}. {artifact.message}
+            </p>
+          ))}
+        </section>
+      ) : null}
+      {mapEditable && (result.artifacts?.filter((artifact) => artifact.status === "accepted").length ?? 0) < 5 ? <OptionalArtifactUpload onAdd={(artifacts) => void command({ type: "add-artifacts", artifacts })} /> : null}
+      <details className="situation-map" open={result.phase === "clarifying"}>
+        <summary>
+          <p className="eyebrow">Situation map</p>
+          <h2 id="situation-map-heading">What we have so far</h2>
+        </summary>
+        <SituationMapSection editable={mapEditable} section="shared" title="You shared" items={situationMap.shared} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="artifactClaims" title="Artifact claims" items={situationMap.artifactClaims} approvedItemIds={result.approvedArtifactClaimIds} onChange={updateMapItem} onSave={saveMapItem} onApprove={(itemId) => void command({ type: "approve-artifact-claim", itemId })} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="interpretations" title="Guide interpretation" items={situationMap.interpretations} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="uncertainties" title="Uncertainties" items={situationMap.uncertainties} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="contradictions" title="Contradictions to resolve" items={situationMap.contradictions} onChange={updateMapItem} onSave={saveMapItem} onResolve={(itemId) => void command({ type: "resolve-contradiction", itemId })} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="constraints" title="Constraints" items={situationMap.constraints} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="progress" title="Immediate progress" items={situationMap.progress} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="pivotHistory" title="Pivot history" items={situationMap.pivotHistory} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+        <SituationMapSection editable={mapEditable} section="priorPatterns" title="Relevant prior patterns" items={situationMap.priorPatterns} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
+      </details>
       {result.phase === "clarifying" && result.clarification ? (
         <section className="pivot-card" aria-labelledby="clarification-heading">
           <p className="eyebrow">One useful question</p>
@@ -422,24 +451,18 @@ function GooglePivotResultView({
           <p className="eyebrow">Why this was adapted</p>
           {result.memoryExplanations.map((memory) => (
             <p key={memory.memoryId}>
-              {memory.text} <a href={`#saved-check-in-${encodeURIComponent(memory.protocolId)}`}>Inspect saved Check-in</a> <button className="text-button" onClick={() => void command({ type: "exclude-memory", memoryId: memory.memoryId })} type="button">Exclude before regenerating</button>
+              {memory.text} <a href={`#saved-check-in-${encodeURIComponent(memory.protocolId)}`}>Inspect saved Check-in</a> <button className="text-button" onClick={() => {
+                if (window.confirm("Exclude this memory from this recommendation?")) void command({ type: "exclude-memory", memoryId: memory.memoryId });
+              }} type="button">Exclude before regenerating</button>
               <button className="text-button" onClick={() => void command({ type: "forget-memory", memoryId: memory.memoryId })} type="button">Forget</button>
               <button className="text-button" onClick={() => void command({ type: "delete-memory", memoryId: memory.memoryId })} type="button">Delete memory</button>
             </p>
           ))}
         </section>
       ) : null}
-      {result.artifacts?.length ? (
-        <section className="history-card" aria-label="Supporting artifact processing">
-          <p className="eyebrow">Supporting artifacts</p>
-          {result.artifacts.map((artifact) => (
-            <p key={artifact.artifactId}>
-              <strong>{artifact.artifactId}:</strong> {artifact.status === "accepted" ? "accepted" : "rejected"}. {artifact.message}
-            </p>
-          ))}
-        </section>
+      {result.pendingConfirmation && result.phase !== "selected" ? (
+        <ConfirmationControls confirmation={result.pendingConfirmation} onConfirm={(confirmationId) => void command({ type: "confirm-action", confirmationId })} onCancel={(confirmationId) => void command({ type: "cancel-confirmation", confirmationId })} />
       ) : null}
-      {mapEditable && (result.artifacts?.filter((artifact) => artifact.status === "accepted").length ?? 0) < 5 ? <OptionalArtifactUpload onAdd={(artifacts) => void command({ type: "add-artifacts", artifacts })} /> : null}
       {result.phase !== "clarifying" && result.phase !== "dismissed" && recommendation ? (
         <section className="pivot-card" aria-labelledby="google-pivot-heading">
           {(() => {
@@ -490,13 +513,17 @@ function GooglePivotResultView({
             <div className="button-row">
               <button onClick={() => void command({ type: "select-pivot", pivotKind: recommendation.primary.kind })} type="button">Choose this Pivot</button>
               <button className="quiet-button" onClick={() => void command({ type: "regenerate-pivot" })} type="button">Show another</button>
-              <button className="text-button" onClick={() => void command({ type: "dismiss-pivot" })} type="button">Dismiss</button>
+              <button className="text-button" onClick={() => {
+                if (window.confirm("Dismiss this Pivot recommendation?")) void command({ type: "dismiss-pivot" });
+              }} type="button">Dismiss</button>
             </div>
           ) : null}
           {result.phase === "selected" ? (
             <>
-              {result.miniPlan ? <MiniPlanFeedbackControls onSubmit={(feedback) => void command({ type: "record-step-feedback", feedback })} /> : null}
-              <OutcomeControls onSubmit={(outcome) => void command({ type: "record-outcome", outcome })} />
+              {!result.pendingConfirmation && result.miniPlan ? <MiniPlanFeedbackControls onSubmit={(feedback) => void command({ type: "record-step-feedback", feedback })} /> : null}
+              {!result.pendingConfirmation ? <OutcomeControls onSubmit={(outcome) => void command({ type: "record-outcome", outcome })} /> : null}
+              {!result.pendingConfirmation ? <button className="quiet-button" onClick={() => void command({ type: "shrink-action" })} type="button">Make this action smaller</button> : null}
+              {result.pendingConfirmation ? <ConfirmationControls confirmation={result.pendingConfirmation} onConfirm={(confirmationId) => void command({ type: "confirm-action", confirmationId })} onCancel={(confirmationId) => void command({ type: "cancel-confirmation", confirmationId })} /> : null}
             </>
           ) : null}
           {result.outcome ? <p className="form-message">Recorded: {result.outcome.status}{result.outcome.agencyShift ? `, ${result.outcome.agencyShift}` : ""}.</p> : null}
@@ -519,21 +546,6 @@ function GooglePivotResultView({
           ) : null}
         </section>
       ) : null}
-      <details className="situation-map" open>
-        <summary>
-          <p className="eyebrow">Situation map</p>
-          <h2 id="situation-map-heading">What we have so far</h2>
-        </summary>
-        <SituationMapSection editable={mapEditable} section="shared" title="You shared" items={situationMap.shared} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection editable={mapEditable} section="artifactClaims" title="Artifact claims" items={situationMap.artifactClaims} approvedItemIds={result.approvedArtifactClaimIds} onChange={updateMapItem} onSave={saveMapItem} onApprove={(itemId) => void command({ type: "approve-artifact-claim", itemId })} savingItem={savingItem} />
-        <SituationMapSection editable={mapEditable} section="interpretations" title="Guide interpretation" items={situationMap.interpretations} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection editable={mapEditable} section="uncertainties" title="Uncertainties" items={situationMap.uncertainties} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection editable={mapEditable} section="contradictions" title="Contradictions to resolve" items={situationMap.contradictions} onChange={updateMapItem} onSave={saveMapItem} onResolve={(itemId) => void command({ type: "resolve-contradiction", itemId })} savingItem={savingItem} />
-        <SituationMapSection editable={mapEditable} section="constraints" title="Constraints" items={situationMap.constraints} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection editable={mapEditable} section="progress" title="Immediate progress" items={situationMap.progress} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection editable={mapEditable} section="pivotHistory" title="Pivot history" items={situationMap.pivotHistory} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-        <SituationMapSection editable={mapEditable} section="priorPatterns" title="Relevant prior patterns" items={situationMap.priorPatterns} onChange={updateMapItem} onSave={saveMapItem} savingItem={savingItem} />
-      </details>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
       {result.phase !== "outcome" ? (
         <button className="text-button" onClick={() => void onDiscard()} type="button">Discard this Check-in</button>
@@ -663,6 +675,85 @@ function GoogleGuidancePreferences() {
   );
 }
 
+function ConversationTimeline({
+  turns,
+  undoableUpdates,
+  onUndo
+}: {
+  turns: GoogleConversationalTurn[];
+  undoableUpdates: Extract<GooglePivotResult, { kind: "pivot-protocol" }>['undoableUpdates'];
+  onUndo: (updateId: string) => void;
+}) {
+  const latestUndoableUpdate = undoableUpdates.at(-1);
+  return (
+    <section className="conversation-timeline" aria-label="Active conversation timeline">
+      <p className="eyebrow">This Check-in</p>
+      <h2>Conversation</h2>
+      {turns.map((turn) => {
+        const canUndo = latestUndoableUpdate && turn.updates.some((update) => update.id === latestUndoableUpdate.id);
+        return (
+          <article className="conversation-turn" key={turn.id}>
+            <p className="conversation-turn__person"><strong>You</strong>{turn.userMessage}</p>
+            <div className="conversation-turn__guide">
+              <p><strong>Pivot guide</strong>{turn.guideResponse.acknowledgment}</p>
+              <p>{turn.guideResponse.explanation}</p>
+              {turn.guideResponse.suggestedReplies.length ? (
+                <ul aria-label="Suggested replies">
+                  {turn.guideResponse.suggestedReplies.map((reply) => <li key={reply}>{reply}</li>)}
+                </ul>
+              ) : null}
+              {turn.updates.length ? (
+                <ul className="conversation-updates" aria-label="Visible protocol updates">
+                  {turn.updates.map((update) => <li key={update.id}>{update.summary}{update.undoable ? " Undoable." : ""}</li>)}
+                </ul>
+              ) : null}
+              {canUndo ? <button className="text-button" onClick={() => onUndo(latestUndoableUpdate.id)} type="button">Undo update</button> : null}
+            </div>
+          </article>
+        );
+      })}
+    </section>
+  );
+}
+
+function ConversationComposer({ onSubmit }: { onSubmit: (message: string) => void }) {
+  const [message, setMessage] = useState("");
+  return (
+    <form className="conversation-composer" onSubmit={(event) => {
+      event.preventDefault();
+      const trimmed = message.trim();
+      if (!trimmed) return;
+      onSubmit(trimmed);
+      setMessage("");
+    }}>
+      <label htmlFor="conversation-message">Add context or tell the guide what changed</label>
+      <textarea id="conversation-message" value={message} onChange={(event) => setMessage(event.target.value)} maxLength={10_000} rows={3} placeholder="I want to correct or add…" />
+      <button type="submit">Send to this Check-in</button>
+    </form>
+  );
+}
+
+function ConfirmationControls({
+  confirmation,
+  onConfirm,
+  onCancel
+}: {
+  confirmation: GooglePendingConfirmation;
+  onConfirm: (confirmationId: string) => void;
+  onCancel: (confirmationId: string) => void;
+}) {
+  return (
+    <section className="confirmation-card" aria-label="Confirmation required">
+      <p><strong>{confirmation.summary}</strong></p>
+      <p className="privacy-note">No change has been made yet.</p>
+      <div className="button-row">
+        <button onClick={() => onConfirm(confirmation.id)} type="button">Confirm</button>
+        <button className="quiet-button" onClick={() => onCancel(confirmation.id)} type="button">Cancel</button>
+      </div>
+    </section>
+  );
+}
+
 function OutcomeControls({ onSubmit }: { onSubmit: (outcome: { status: "completed" | "partly-helpful" | "not-a-fit" | "skipped"; agencyShift?: "more-able" | "about-as-able" | "less-able" }) => void }) {
   const [agencyShift, setAgencyShift] = useState<"more-able" | "about-as-able" | "less-able">();
   return (
@@ -750,7 +841,7 @@ function SituationMapSection({
 
 function ActivityTrace({ events }: { events: { kind: string; message: string }[] }) {
   return (
-    <details className="activity-trace" open>
+    <details className="activity-trace" open={events.some((event) => event.kind === "fallback")}>
       <summary>
         <p className="eyebrow">Activity trace</p>
         <h2 id="activity-trace-heading">Observable actions</h2>

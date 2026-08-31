@@ -38,7 +38,11 @@ input {
 
   .google-pivot-workspace > .check-in-card,
   .google-pivot-workspace > .pivot-card,
-  .google-pivot-workspace > .pivot-result {
+  .google-pivot-workspace > .pivot-result,
+  .google-pivot-workspace > .conversation-timeline,
+  .google-pivot-workspace > .conversation-composer,
+  .google-pivot-workspace > .history-card,
+  .google-pivot-workspace > .confirmation-card {
     grid-column: 1;
   }
 
@@ -175,6 +179,77 @@ button:disabled {
   display: grid;
   gap: 1.5rem;
   padding-bottom: 2rem;
+}
+
+.conversation-timeline,
+.conversation-composer,
+.confirmation-card {
+  border-top: 1px solid #344137;
+  padding-top: 1.5rem;
+}
+
+.conversation-timeline h2 {
+  font-size: 1.5rem;
+  letter-spacing: -0.04em;
+  margin-top: 0.6rem;
+}
+
+.conversation-turn {
+  border-top: 1px solid #344137;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+}
+
+.conversation-turn p,
+.conversation-turn li,
+.conversation-composer label,
+.confirmation-card p {
+  color: #b8c4ba;
+  line-height: 1.45;
+  margin-top: 0.55rem;
+}
+
+.conversation-turn strong {
+  color: #d3e3d4;
+  display: block;
+  font-size: 0.86rem;
+  margin-bottom: 0.25rem;
+}
+
+.conversation-turn__guide {
+  border-left: 2px solid #526258;
+  margin-top: 0.8rem;
+  padding-left: 0.8rem;
+}
+
+.conversation-turn ul {
+  color: #829084;
+  font-size: 0.85rem;
+  margin: 0.65rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.conversation-updates {
+  color: #c8ecca !important;
+}
+
+.conversation-composer {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.conversation-composer textarea {
+  margin-top: 0.1rem;
+}
+
+.conversation-composer button {
+  justify-self: start;
+}
+
+.confirmation-card {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 1.25rem;
 }
 
 .google-pivot-workspace .check-in-card,

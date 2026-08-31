@@ -31,6 +31,50 @@ describe("Google Pivot HTTP interface", () => {
     await expect(response.json()).resolves.toMatchObject({ kind: "pivot-protocol" });
   });
 
+  it("accepts a later natural context message and returns its visible protocol update", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await startGoogleProtocol(
+      { subject: "firebase-user-1" },
+      { repository, createId: () => "protocol-1", now: () => "2026-08-26T12:00:00.000Z" }
+    );
+    const generator = {
+      async generate({ situationMap }: { situationMap: import("../app/google-pivot-protocol").SituationMap }) {
+        return {
+          situationMap,
+          primaryPivotKind: "task-first-step",
+          alternativePivotKinds: ["grounding", "reaching-out"],
+          whyThisPivot: "A bounded next step is available."
+        };
+      }
+    };
+    const start = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({ protocolId: "protocol-1", expectedVersion: 0, idempotencyKey: "start-1", quickDump: "I am stuck on moving paperwork.", consentGiven: true })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository,
+      generator
+    );
+    expect(start.status).toBe(200);
+
+    const response = await handleGooglePivotPost(
+      new Request("http://localhost/api/google/pivot", {
+        method: "POST",
+        body: JSON.stringify({ protocolId: "protocol-1", expectedVersion: 1, idempotencyKey: "context-1", type: "add-context", message: "The landlord needs the checklist by Friday." })
+      }),
+      async () => ({ subject: "firebase-user-1" }),
+      repository,
+      generator
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.version).toBe(2);
+    expect(body.situationMap.shared).toEqual(expect.arrayContaining([expect.objectContaining({ text: "The landlord needs the checklist by Friday.", provenance: "person" })]));
+    expect(body.conversation).toEqual(expect.arrayContaining([expect.objectContaining({ userMessage: "The landlord needs the checklist by Friday." })]));
+    expect(body.undoableUpdates).toEqual([expect.objectContaining({ kind: "stated-context" })]);
+  });
+
   it("returns a correlation id and emits content-free telemetry", async () => {
     const repository = createInMemoryGoogleProtocolRepository();
     await startGoogleProtocol(

@@ -188,7 +188,7 @@ function parseInput(value: unknown, request: Request, route: "protocol" | "outco
   }
 
   const command = parseCommand(body);
-  if (route === "outcome" && command.type !== "record-outcome") {
+  if (route === "outcome" && command.type !== "record-outcome" && command.type !== "confirm-action" && command.type !== "cancel-confirmation") {
     throw new HttpInputError("Only outcome commands are accepted on this route.");
   }
   if (route === "protocol" && command.type === "record-outcome") {
@@ -221,6 +221,11 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
       return { type, artifact: parseSupportingArtifactInput(body.artifact) };
     case "add-artifacts":
       return { type, artifacts: parseSupportingArtifactsInput(body.artifacts) };
+    case "add-context":
+      if (typeof body.message !== "string" || !body.message.trim() || body.message.length > 10_000) {
+        throw new HttpInputError("A context message is required and must be 10,000 characters or smaller.");
+      }
+      return { type, message: body.message };
     case "approve-artifact-claim":
       if (typeof body.itemId !== "string" || !body.itemId.trim()) throw new HttpInputError("An artifact claim identifier is required.");
       return { type, itemId: body.itemId.trim() };
@@ -242,6 +247,15 @@ function parseCommand(body: Record<string, unknown>): GooglePivotCommand {
     case "record-step-feedback":
       if (!isPivotStepFeedback(body.feedback)) throw new HttpInputError("The Pivot step feedback is invalid.");
       return { type, feedback: body.feedback };
+    case "shrink-action":
+      return { type };
+    case "undo-update":
+      if (typeof body.updateId !== "string" || !body.updateId.trim()) throw new HttpInputError("A reversible update identifier is required.");
+      return { type, updateId: body.updateId.trim() };
+    case "confirm-action":
+    case "cancel-confirmation":
+      if (typeof body.confirmationId !== "string" || !body.confirmationId.trim()) throw new HttpInputError("A confirmation identifier is required.");
+      return { type, confirmationId: body.confirmationId.trim() };
     case "regenerate-pivot":
     case "dismiss-pivot":
       return { type };

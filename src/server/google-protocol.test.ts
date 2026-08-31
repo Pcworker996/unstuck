@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { GooglePivotGenerator } from "../app/google-pivot-protocol";
+import type { GooglePivotGenerator, PivotOutcome } from "../app/google-pivot-protocol";
 import {
   createInMemoryGoogleProtocolRepository,
   deleteGoogleSavedProtocol,
@@ -10,6 +10,27 @@ import {
   startGoogleProtocol
 } from "./google-protocol";
 import { createInMemoryGoogleMemoryRepository } from "./google-memory";
+
+async function confirmedOutcome(
+  input: {
+    subject: string;
+    protocolId: string;
+    expectedVersion: number;
+    idempotencyKey: string;
+    command: { type: "record-outcome"; outcome: PivotOutcome };
+  },
+  dependencies: Parameters<typeof runGoogleProtocolCommand>[1],
+  generator?: GooglePivotGenerator
+) {
+  const requested = await runGoogleProtocolCommand(input, dependencies, generator);
+  if (requested.kind !== "state") return requested;
+  return runGoogleProtocolCommand({
+    ...input,
+    expectedVersion: requested.state.version,
+    idempotencyKey: `${input.idempotencyKey}-confirm`,
+    command: { type: "confirm-action", confirmationId: requested.state.pendingConfirmation?.id ?? "missing" }
+  }, dependencies, generator);
+}
 
 describe("Google Protocol", () => {
   it("creates and reloads a minimal protocol for its authenticated owner", async () => {
@@ -211,8 +232,21 @@ describe("Google Protocol", () => {
       subject: "firebase-user-1", protocolId: "protocol-2", expectedVersion: 2,
       idempotencyKey: "protocol-2-outcome", command: { type: "record-outcome" as const, outcome: { status: "completed" as const } }
     };
-    expect(await runGoogleProtocolCommand(outcomeInput, { repository })).toMatchObject({ kind: "state", state: { version: 3 } });
-    expect(await runGoogleProtocolCommand(outcomeInput, { repository })).toMatchObject({ kind: "state", replayed: true, state: { version: 3 } });
+    expect(await runGoogleProtocolCommand(outcomeInput, { repository })).toMatchObject({ kind: "state", state: { version: 3, pendingConfirmation: { kind: "record-outcome" } } });
+    expect(await runGoogleProtocolCommand(outcomeInput, { repository })).toMatchObject({ kind: "state", replayed: true, state: { version: 3, pendingConfirmation: { kind: "record-outcome" } } });
+    const confirmed = await runGoogleProtocolCommand({
+      ...outcomeInput,
+      expectedVersion: 3,
+      idempotencyKey: "protocol-2-outcome-confirm",
+      command: { type: "confirm-action", confirmationId: "confirmation-3" }
+    }, { repository });
+    expect(confirmed).toMatchObject({ kind: "state", state: { version: 4, phase: "outcome" } });
+    expect(await runGoogleProtocolCommand({
+      ...outcomeInput,
+      expectedVersion: 3,
+      idempotencyKey: "protocol-2-outcome-confirm",
+      command: { type: "confirm-action", confirmationId: "confirmation-3" }
+    }, { repository })).toMatchObject({ kind: "state", replayed: true, state: { version: 4, phase: "outcome" } });
 
     const questionGenerator: GooglePivotGenerator = {
       async generate({ situationMap, clarificationAnswers }) {
@@ -267,7 +301,7 @@ describe("Google Protocol", () => {
         idempotencyKey: `${protocolId}-select`,
         command: { type: "select-pivot", pivotKind: "grounding" }
       }, { repository });
-      await runGoogleProtocolCommand({
+      await confirmedOutcome({
         subject,
         protocolId,
         expectedVersion: 2,
@@ -319,19 +353,25 @@ describe("Google Protocol", () => {
       subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 1, idempotencyKey: "select",
       command: { type: "select-pivot", pivotKind: "grounding" }
     }, { repository });
-    const outcome = await runGoogleProtocolCommand({
+    const outcomeRequest = await runGoogleProtocolCommand({
       subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 2, idempotencyKey: "outcome",
       command: { type: "record-outcome", outcome: { status: "completed" } }
     }, { repository });
-    expect(outcome).toMatchObject({ kind: "state", replayed: false, state: { persistence: "unsaved" } });
+    expect(outcomeRequest).toMatchObject({ kind: "state", replayed: false, state: { pendingConfirmation: { kind: "record-outcome" } } });
     await expect(runGoogleProtocolCommand({
       subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 2, idempotencyKey: "outcome",
       command: { type: "record-outcome", outcome: { status: "completed" } }
     }, { repository })).resolves.toMatchObject({
       kind: "state",
       replayed: true,
-      state: { persistence: "unsaved", recommendation: { primary: { kind: "grounding" } } }
+      state: { persistence: "unsaved", pendingConfirmation: { kind: "record-outcome" } }
     });
+    if (outcomeRequest.kind !== "state") return;
+    const outcome = await runGoogleProtocolCommand({
+      subject: "firebase-user-1", protocolId: "protocol-unsaved", expectedVersion: 3, idempotencyKey: "outcome-confirm",
+      command: { type: "confirm-action", confirmationId: outcomeRequest.state.pendingConfirmation?.id ?? "missing" }
+    }, { repository });
+    expect(outcome).toMatchObject({ kind: "state", replayed: false, state: { persistence: "unsaved" } });
 
     const loaded = await loadGoogleProtocol(
       { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
@@ -346,7 +386,7 @@ describe("Google Protocol", () => {
     expect(JSON.stringify(stored)).not.toContain("This Quick dump must not become history.");
     expect(stored).not.toHaveProperty("pivotState");
     expect(JSON.stringify(stored)).not.toContain("shared-1");
-    expect(Object.keys(stored?.idempotency ?? {})).toEqual(["outcome"]);
+    expect(Object.keys(stored?.idempotency ?? {})).toEqual(["outcome-confirm"]);
   });
 
   it("persists only the selected action and final outcome from a completed mini-plan", async () => {
@@ -367,7 +407,7 @@ describe("Google Protocol", () => {
       command: { type: "select-pivot", pivotKind: "grounding" }
     }, { repository });
     if (selected.kind !== "state") return;
-    const outcome = await runGoogleProtocolCommand({
+    const outcome = await confirmedOutcome({
       subject: "firebase-user-1", protocolId: "protocol-saved", expectedVersion: 2, idempotencyKey: "outcome",
       command: { type: "record-outcome", outcome: { status: "completed" } }
     }, { repository });
@@ -426,8 +466,17 @@ describe("Google Protocol", () => {
       idempotencyKey: "outcome-1",
       command: { type: "record-outcome" as const, outcome: { status: "completed" as const } }
     };
-    const first = await runGoogleProtocolCommand(outcomeInput, { repository }, generator);
-    const replay = await runGoogleProtocolCommand(outcomeInput, { repository }, generator);
+    const requested = await runGoogleProtocolCommand(outcomeInput, { repository }, generator);
+    expect(requested).toMatchObject({ kind: "state", state: { pendingConfirmation: { kind: "record-outcome" } } });
+    if (requested.kind !== "state") return;
+    const confirmedInput = {
+      ...outcomeInput,
+      expectedVersion: requested.state.version,
+      idempotencyKey: "outcome-1-confirm",
+      command: { type: "confirm-action" as const, confirmationId: requested.state.pendingConfirmation?.id ?? "missing" }
+    };
+    const first = await runGoogleProtocolCommand(confirmedInput, { repository }, generator);
+    const replay = await runGoogleProtocolCommand(confirmedInput, { repository }, generator);
 
     expect(first).toMatchObject({ kind: "state", replayed: false, state: { enrichment: "saved" } });
     expect(replay).toMatchObject({ kind: "state", replayed: true, state: { enrichment: "saved" } });
@@ -549,7 +598,7 @@ describe("Google Protocol", () => {
       subject: "firebase-user-1", protocolId: "protocol-1", expectedVersion: 1, idempotencyKey: "select-1",
       command: { type: "select-pivot", pivotKind: "grounding" }
     }, { repository, adaptation }, generator);
-    const outcome = await runGoogleProtocolCommand({
+    const outcome = await confirmedOutcome({
       subject: "firebase-user-1", protocolId: "protocol-1", expectedVersion: 2, idempotencyKey: "outcome-1",
       command: { type: "record-outcome", outcome: { status: "completed" } }
     }, { repository, adaptation }, generator);

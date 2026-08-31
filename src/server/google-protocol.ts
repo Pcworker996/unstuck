@@ -6,6 +6,7 @@ import {
   type GooglePivotCommandResult,
   type GooglePivotGenerator,
   type GooglePivotResult,
+  googlePivotSafetyMessage,
   googlePivotSafetyResult
 } from "../app/google-pivot-protocol";
 import type { GooglePivotAdaptation } from "../app/google-pivot-protocol";
@@ -226,6 +227,11 @@ export async function runGoogleProtocolCommand(
   const current = existing.pivotState && isPivotState(existing.pivotState)
     ? normalizePivotState(existing.pivotState)
     : undefined;
+  const laterUserMessage = googlePivotSafetyMessage(input.command);
+  if (laterUserMessage && current) {
+    const safetyResult = googlePivotSafetyResult(laterUserMessage);
+    if (safetyResult) return { kind: "safety-interruption", result: { ...safetyResult, priorState: current } };
+  }
   if (dependencies.quota && mayUsePlatform(input.command, current, Boolean(dependencies.adaptation))) {
     const reservation = quotaReservation(input.command, current);
     try {
@@ -309,11 +315,19 @@ function currentState(protocol: StoredGoogleProtocol): Extract<GooglePivotResult
 }
 
 function quotaReservation(command: GooglePivotCommand, current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined): { modelUnits: number; artifactUnits: number } {
-  if (command.type === "approve-artifact-claim" || command.type === "select-pivot" || command.type === "dismiss-pivot") {
+  if (command.type === "approve-artifact-claim" || command.type === "select-pivot" || command.type === "dismiss-pivot" || command.type === "shrink-action" || command.type === "undo-update" || command.type === "cancel-confirmation") {
     return { modelUnits: 0, artifactUnits: 0 };
   }
   if (command.type === "record-outcome") {
     return { modelUnits: current?.saveRequested ? 2 : 0, artifactUnits: 0 };
+  }
+  if (command.type === "confirm-action") {
+    return current?.pendingConfirmation?.kind === "record-outcome"
+      ? { modelUnits: current.saveRequested ? 2 : 0, artifactUnits: 0 }
+      : { modelUnits: 4, artifactUnits: 0 };
+  }
+  if (command.type === "forget-memory" || command.type === "delete-memory") {
+    return { modelUnits: 0, artifactUnits: 0 };
   }
   const artifactUnits = command.type === "start"
     ? (command.image ? 1 : 0) + (command.artifacts?.length ?? 0)
@@ -326,6 +340,7 @@ function quotaReservation(command: GooglePivotCommand, current: Extract<GooglePi
 function mayUsePlatform(command: GooglePivotCommand, current: Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined, hasAdaptation: boolean): boolean {
   if (command.type === "start") return !current && command.consentGiven;
   if (!current) return false;
+  if (command.type === "add-context") return isActiveConversationPhase(current.phase) && Boolean(command.message.trim());
   if (command.type === "add-image") return current.imageProcessing.status !== "accepted" && isEditablePhase(current.phase);
   if (command.type === "add-artifact" || command.type === "add-artifacts") return isEditablePhase(current.phase);
   if (command.type === "answer-clarification" || command.type === "skip-clarification") {
@@ -347,7 +362,12 @@ function mayUsePlatform(command: GooglePivotCommand, current: Extract<GooglePivo
     return hasAdaptation && current.memoryExplanations.some((memory) => memory.memoryId === command.memoryId);
   }
   if (command.type === "record-outcome") return current.phase === "selected" && Boolean(current.selectedPivot) && ["completed", "partly-helpful", "not-a-fit", "skipped"].includes(command.outcome.status) && (command.outcome.agencyShift === undefined || ["more-able", "about-as-able", "less-able"].includes(command.outcome.agencyShift)) && (command.outcome.pivotTimeSeconds === undefined || (Number.isInteger(command.outcome.pivotTimeSeconds) && command.outcome.pivotTimeSeconds >= 0));
+  if (command.type === "confirm-action") return Boolean(current.pendingConfirmation);
   return false;
+}
+
+function isActiveConversationPhase(phase: Extract<GooglePivotResult, { kind: "pivot-protocol" }>["phase"]): boolean {
+  return phase === "clarifying" || phase === "recommended" || phase === "selected";
 }
 
 function isEditablePhase(phase: Extract<GooglePivotResult, { kind: "pivot-protocol" }>["phase"]): boolean {
@@ -370,9 +390,18 @@ function stateForPersistence(
 ): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
   if (state.phase !== "outcome") return state;
   if (!state.saveRequested) return unsavedOutcomeReceipt(state);
-  const { recommendation: _recommendation, miniPlan: _miniPlan, ...retained } = state;
+  const {
+    recommendation: _recommendation,
+    miniPlan: _miniPlan,
+    conversation: _conversation,
+    undoableUpdates: _undoableUpdates,
+    pendingConfirmation: _pendingConfirmation,
+    ...retained
+  } = state;
   return {
     ...retained,
+    conversation: [],
+    undoableUpdates: [],
     situationMap: {
       ...retained.situationMap,
       pivotHistory: retained.situationMap.pivotHistory.filter((item) => !item.id.startsWith("pivot-step-"))
@@ -403,6 +432,8 @@ function unsavedOutcomeReceipt(
     },
     version: state.version,
     phase: "outcome",
+    conversation: [],
+    undoableUpdates: [],
     revisions: [],
     selectedPivot,
     selectedAction,
@@ -652,6 +683,8 @@ function normalizePivotState(
     : undefined;
   return {
     ...state,
+    conversation: state.conversation ?? [],
+    undoableUpdates: state.undoableUpdates ?? [],
     ...(recommendation ? { recommendation } : {}),
     memoryExplanations: state.memoryExplanations ?? [],
     retrievedMemories: state.retrievedMemories ?? [],

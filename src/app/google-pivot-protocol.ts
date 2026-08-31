@@ -60,6 +60,34 @@ export type MapRevision = {
   editedBy: "person";
 };
 
+export type GoogleGuideResponse = {
+  acknowledgment: string;
+  explanation: string;
+  suggestedReplies: string[];
+};
+
+export type GoogleVisibleProtocolUpdate = {
+  id: string;
+  kind: "situation-map" | "clarification" | "recommendation" | "feedback" | "action-shrink" | "confirmation";
+  summary: string;
+  undoable: boolean;
+};
+
+export type GoogleConversationalTurn = {
+  id: string;
+  userMessage: string;
+  guideResponse: GoogleGuideResponse;
+  updates: GoogleVisibleProtocolUpdate[];
+};
+
+export type GooglePendingConfirmation = {
+  id: string;
+  kind: "record-outcome" | "forget-memory" | "delete-memory";
+  summary: string;
+  outcome?: PivotOutcome;
+  memoryId?: string;
+};
+
 export type PivotOutcome = {
   status: "completed" | "partly-helpful" | "not-a-fit" | "skipped";
   agencyShift?: "more-able" | "about-as-able" | "less-able";
@@ -133,6 +161,12 @@ export type ActivityEvent = {
     | "clarification-skipped"
     | "map-revised"
     | "contradiction-resolved"
+    | "confirmation-requested"
+    | "confirmation-confirmed"
+    | "confirmation-cancelled"
+    | "undo-applied"
+    | "action-shrunk"
+    | "context-added"
     | "pivot-selected"
     | "memory-retrieval"
     | "step-feedback"
@@ -159,6 +193,7 @@ export type GooglePivotGeneratorOutput = {
   clarificationQuestion?: ClarificationQuestion;
   primaryAction?: SituationalPivotAction;
   alternativeActions?: SituationalPivotAction[];
+  guideResponse?: GoogleGuideResponse;
 };
 
 export type GoogleMemoryRetrievalTool = {
@@ -257,6 +292,9 @@ export type GooglePivotResult =
       situationMap: SituationMap;
       version: number;
       phase: GooglePivotPhase;
+      conversation: GoogleConversationalTurn[];
+      undoableUpdates: GoogleUndoableUpdate[];
+      pendingConfirmation?: GooglePendingConfirmation;
       clarification?: {
         question: ClarificationQuestion;
         answers: ClarificationAnswer[];
@@ -291,6 +329,35 @@ export type GooglePivotResult =
       activity: ActivityEvent[];
       fallback: boolean;
     };
+
+export type GoogleUndoSnapshot = {
+  situationMap: SituationMap;
+  phase: GooglePivotPhase;
+  clarification?: {
+    question: ClarificationQuestion;
+    answers: ClarificationAnswer[];
+  };
+  revisions: MapRevision[];
+  selectedPivot?: Pivot;
+  selectedAction?: SituationalPivotAction;
+  outcome?: PivotOutcome;
+  recommendation?: Extract<GooglePivotResult, { kind: "pivot-protocol" }>['recommendation'];
+  miniPlan?: GooglePivotMiniPlan;
+  memoryExplanations: GoogleMemoryExplanation[];
+  retrievedMemories: GoogleRetrievedMemory[];
+  retrievalAttempted: boolean;
+  adaptationStatus: "not-requested" | "personalized" | "no-match" | "unavailable";
+  excludedMemoryIds: string[];
+  guidancePreferenceIds: string[];
+  fallback: boolean;
+};
+
+export type GoogleUndoableUpdate = {
+  id: string;
+  kind: "stated-context" | "map-correction" | "clarification" | "feedback" | "action-shrink" | "contradiction-resolution";
+  summary: string;
+  before: GoogleUndoSnapshot;
+};
 
 export function googlePivotSafetyResult(
   quickDump: string
@@ -493,6 +560,8 @@ export async function runGooglePivotProtocol(
     enrichment: "not-requested",
     ...(pendingDerivedContext && saveRequested ? { pendingDerivedContext } : {}),
     phase: output.clarificationQuestion ? "clarifying" : "recommended",
+    conversation: [initialConversationTurn(quickDump, output)],
+    undoableUpdates: [],
     situationMap: output.situationMap,
     ...(output.clarificationQuestion
       ? { clarification: { question: output.clarificationQuestion, answers: [] } }
@@ -519,6 +588,7 @@ export type GooglePivotCommand =
   | { type: "add-image"; image: GoogleImageArtifactInput }
   | { type: "add-artifact"; artifact: GoogleSupportingArtifactInput }
   | { type: "add-artifacts"; artifacts: GoogleSupportingArtifactInput[] }
+  | { type: "add-context"; message: string }
   | { type: "approve-artifact-claim"; itemId: string }
   | { type: "answer-clarification"; questionId: string; answer: string }
   | { type: "skip-clarification"; questionId: string }
@@ -531,12 +601,24 @@ export type GooglePivotCommand =
   | { type: "resolve-contradiction"; itemId: string }
   | { type: "select-pivot"; pivotKind: string }
   | { type: "record-step-feedback"; feedback: PivotStepFeedback }
+  | { type: "shrink-action" }
+  | { type: "undo-update"; updateId: string }
+  | { type: "confirm-action"; confirmationId: string }
+  | { type: "cancel-confirmation"; confirmationId: string }
   | { type: "regenerate-pivot" }
   | { type: "dismiss-pivot" }
   | { type: "exclude-memory"; memoryId: string }
   | { type: "forget-memory"; memoryId: string }
   | { type: "delete-memory"; memoryId: string }
   | { type: "record-outcome"; outcome: PivotOutcome };
+
+export function googlePivotSafetyMessage(command: GooglePivotCommand): string | undefined {
+  if (command.type === "add-context") return command.message;
+  if (command.type === "correct-map") return command.text;
+  if (command.type === "answer-clarification") return command.answer;
+  if (command.type === "record-step-feedback") return command.feedback.note;
+  return undefined;
+}
 
 export type GooglePivotCommandResult =
   | { kind: "ok"; state: Extract<GooglePivotResult, { kind: "pivot-protocol" }> }
@@ -564,6 +646,16 @@ export async function runGooglePivotCommand(
 
   if (!current) {
     return { kind: "invalid-command", message: "Start the protocol before sending commands." };
+  }
+
+  const laterUserMessage = googlePivotSafetyMessage(command);
+  if (laterUserMessage) {
+    const safetyResult = googlePivotSafetyResult(laterUserMessage);
+    if (safetyResult) return { kind: "safety-interruption", result: { ...safetyResult, priorState: current } };
+  }
+
+  if (command.type === "add-context") {
+    return addContextToProtocol(current, command, generator, adaptation);
   }
 
   if (command.type === "answer-clarification" || command.type === "skip-clarification") {
@@ -616,49 +708,8 @@ export async function runGooglePivotCommand(
     if (command.type !== "exclude-memory" && !adaptation) {
       return { kind: "invalid-command", message: "Memory controls are unavailable." };
     }
-    try {
-      if (command.type === "exclude-memory" && adaptation?.excludeMemory && !(await adaptation.excludeMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
-        return { kind: "invalid-command", message: "That memory could not be excluded." };
-      }
-      if (command.type === "forget-memory" && adaptation?.forgetMemory && !(await adaptation.forgetMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
-        return { kind: "invalid-command", message: "That memory could not be forgotten." };
-      }
-      if (command.type === "delete-memory" && adaptation?.deleteMemory && !(await adaptation.deleteMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
-        return { kind: "invalid-command", message: "That memory could not be deleted." };
-      }
-    } catch {
-      return {
-        kind: "dependency-unavailable",
-        message: "Memory controls are temporarily unavailable; the current Situation map was preserved.",
-        state: current
-      };
-    }
-    const nextExcluded = [...new Set([...current.excludedMemoryIds, command.memoryId])];
-    if (!adaptation) {
-      return { kind: "ok", state: { ...current, excludedMemoryIds: nextExcluded, memoryExplanations: current.memoryExplanations.filter((memory) => memory.memoryId !== command.memoryId) } };
-    }
-    const nextAdaptation = { ...adaptation, excludedMemoryIds: nextExcluded };
-    const nextSituationMap = removeMemoryPatterns(current.situationMap, nextExcluded);
-    const generation = await generateAdaptedOutput(current.checkIn.quickDump, nextSituationMap, generator, current.clarification?.answers, nextAdaptation, current.retrievalAttempted ? current.retrievedMemories : undefined);
-    return {
-      kind: "ok",
-      state: {
-        ...current,
-        phase: "recommended",
-        selectedPivot: undefined,
-        outcome: undefined,
-        situationMap: preserveAcceptedMapItems(generation.output.situationMap, nextSituationMap, current.revisions),
-        recommendation: recommendationFromOutput(generation.output),
-        excludedMemoryIds: nextExcluded,
-        memoryExplanations: generation.explanations,
-        retrievedMemories: generation.memories,
-        retrievalAttempted: generation.retrievalAttempted,
-        guidancePreferenceIds: generation.preferenceIds,
-        adaptationStatus: generation.status,
-        fallback: current.fallback || generation.fallback,
-        activity: [...current.activity, { kind: "recommendation-regenerated", message: command.type === "exclude-memory" ? "The excluded memory no longer informs this recommendation." : "The removed memory no longer informs this recommendation." }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Personalization is unavailable; the accepted Situation map remains usable." }] : [])]
-      }
-    };
+    if (command.type !== "exclude-memory") return requestMemoryConfirmation(current, command);
+    return applyMemoryControl(current, command, generator, adaptation);
   }
 
   if (command.type === "select-pivot") {
@@ -669,30 +720,53 @@ export async function runGooglePivotCommand(
     if (!pivot) {
       return { kind: "invalid-command", message: "That Pivot is not available." };
     }
+    const selectedAction = actionForPivot(current.recommendation, pivot.kind);
+    const nextState = {
+      ...current,
+      phase: "selected" as const,
+      selectedPivot: pivot,
+      selectedAction,
+      miniPlan: {
+        currentAction: selectedAction,
+        completedActions: [],
+        feedback: [],
+        stepNumber: 1,
+        maxSteps: 3 as const
+      },
+      activity: [...current.activity, {
+        kind: "pivot-selected" as const,
+        message: "The person selected a Pivot to perform."
+      }]
+    };
     return {
       kind: "ok",
-      state: {
-        ...current,
-        phase: "selected",
-        selectedPivot: pivot,
-        selectedAction: actionForPivot(current.recommendation, pivot.kind),
-        miniPlan: {
-          currentAction: actionForPivot(current.recommendation, pivot.kind),
-          completedActions: [],
-          feedback: [],
-          stepNumber: 1,
-          maxSteps: 3
-        },
-        activity: [...current.activity, {
-          kind: "pivot-selected",
-          message: "The person selected a Pivot to perform."
-        }]
-      }
+      state: appendConversationTurn(
+        nextState,
+        `Choose Pivot: ${selectedAction.title}`,
+        guideResponseForState(nextState, "The selected action is ready one step at a time."),
+        [{ id: `selection-${current.conversation.length + 1}`, kind: "recommendation", summary: "Selected one bounded Pivot to try.", undoable: false }]
+      )
     };
   }
 
   if (command.type === "record-step-feedback") {
     return recordStepFeedback(current, command.feedback, generator);
+  }
+
+  if (command.type === "shrink-action") {
+    return shrinkCurrentAction(current);
+  }
+
+  if (command.type === "undo-update") {
+    return undoUpdate(current, command.updateId);
+  }
+
+  if (command.type === "confirm-action") {
+    return confirmAction(current, command.confirmationId, generator, adaptation);
+  }
+
+  if (command.type === "cancel-confirmation") {
+    return cancelConfirmation(current, command.confirmationId);
   }
 
   if (command.type === "regenerate-pivot") {
@@ -712,44 +786,56 @@ export async function runGooglePivotCommand(
     const recommendation = generatedRecommendation.primary.kind === current.recommendation.primary.kind
       ? rotatedRecommendation(generatedRecommendation)
       : generatedRecommendation;
+    const nextState = {
+      ...current,
+      phase: "recommended" as const,
+      selectedPivot: undefined,
+      situationMap: preserveAcceptedMapItems(output.situationMap, current.situationMap, current.revisions),
+      recommendation,
+      outcome: undefined,
+      memoryExplanations: generation.explanations,
+      retrievedMemories: generation.memories,
+      retrievalAttempted: generation.retrievalAttempted,
+      adaptationStatus: generation.status,
+      guidancePreferenceIds: generation.preferenceIds,
+      fallback: current.fallback || generation.fallback,
+      activity: [...current.activity, {
+        kind: "recommendation-regenerated" as const,
+        message: "A different bounded Pivot recommendation was generated."
+      }, ...(generation.fallback ? [{
+        kind: "fallback" as const,
+        message: "Curated fallback preserved the accepted protocol state."
+      }] : [])]
+    };
     return {
       kind: "ok",
-      state: {
-        ...current,
-        phase: "recommended",
-        selectedPivot: undefined,
-        situationMap: preserveAcceptedMapItems(output.situationMap, current.situationMap, current.revisions),
-        recommendation,
-        outcome: undefined,
-        memoryExplanations: generation.explanations,
-        retrievedMemories: generation.memories,
-        retrievalAttempted: generation.retrievalAttempted,
-        adaptationStatus: generation.status,
-        guidancePreferenceIds: generation.preferenceIds,
-        fallback: current.fallback || generation.fallback,
-        activity: [...current.activity, {
-          kind: "recommendation-regenerated",
-          message: "A different bounded Pivot recommendation was generated."
-        }, ...(generation.fallback ? [{
-          kind: "fallback" as const,
-          message: "Curated fallback preserved the accepted protocol state."
-        }] : [])]
-      }
+      state: appendConversationTurn(
+        nextState,
+        "Show another Pivot.",
+        output.guideResponse ?? guideResponseForState(nextState, "Here is another bounded option."),
+        [{ id: `regeneration-${current.conversation.length + 1}`, kind: "recommendation", summary: "Generated a different bounded recommendation.", undoable: false }]
+      )
     };
   }
 
   if (command.type === "dismiss-pivot") {
+    const nextState = {
+      ...current,
+      phase: "dismissed" as const,
+      selectedPivot: undefined,
+      activity: [...current.activity, {
+        kind: "pivot-dismissed" as const,
+        message: "The person dismissed the Pivot recommendation."
+      }]
+    };
     return {
       kind: "ok",
-      state: {
-        ...current,
-        phase: "dismissed",
-        selectedPivot: undefined,
-        activity: [...current.activity, {
-          kind: "pivot-dismissed",
-          message: "The person dismissed the Pivot recommendation."
-        }]
-      }
+      state: appendConversationTurn(
+        nextState,
+        "Dismiss the Pivot recommendation.",
+        guideResponseForState(nextState, "The recommendation was dismissed; the Situation map remains available."),
+        [{ id: `dismissal-${current.conversation.length + 1}`, kind: "recommendation", summary: "Dismissed the bounded recommendation.", undoable: false }]
+      )
     };
   }
 
@@ -763,7 +849,7 @@ export async function runGooglePivotCommand(
       (!Number.isInteger(command.outcome.pivotTimeSeconds) || command.outcome.pivotTimeSeconds < 0)) {
     return { kind: "invalid-command", message: "Pivot time must be a non-negative whole number of seconds." };
   }
-  return recordOutcome(current, current.selectedPivot, command.outcome, generator);
+  return requestOutcomeConfirmation(current, command.outcome);
 }
 
 async function recordOutcome(
@@ -999,6 +1085,104 @@ async function addArtifactsToProtocol(
   };
 }
 
+async function addContextToProtocol(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  command: Extract<GooglePivotCommand, { type: "add-context" }>,
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
+): Promise<GooglePivotCommandResult> {
+  const message = command.message.trim();
+  if (!message || message.length > 10_000) {
+    return { kind: "invalid-command", message: "A context message must be between 1 and 10,000 characters." };
+  }
+  if (current.phase === "outcome" || current.phase === "dismissed") {
+    return { kind: "invalid-command", message: "This Check-in is no longer accepting context." };
+  }
+  if (current.pendingConfirmation) {
+    return { kind: "invalid-command", message: "Confirm or cancel the pending action before adding context." };
+  }
+
+  const before = snapshotForUndo(current);
+  const situationMap = {
+    ...current.situationMap,
+    shared: [
+      ...current.situationMap.shared,
+      createSituationMapItem(`context-${current.conversation.length + 1}`, message, "person")
+    ]
+  };
+  const activity = [...current.activity, {
+    kind: "context-added" as const,
+    message: "The person added stated context to the Situation map."
+  }];
+
+  if (current.phase === "selected") {
+    const nextState = {
+      ...current,
+      situationMap,
+      activity
+    };
+    return {
+      kind: "ok",
+      state: withUndoableUpdate(
+        nextState,
+        before,
+        "stated-context",
+        "Added stated context to the Situation map.",
+        message,
+        guideResponseForState(nextState, "The new context is visible in the Situation map."),
+        [{ kind: "situation-map", summary: "The new stated context was added to the Situation map.", undoable: true }]
+      )
+    };
+  }
+
+  const generation = await generateAdaptedOutput(
+    current.checkIn.quickDump,
+    situationMap,
+    generator,
+    current.clarification?.answers,
+    adaptationForState(adaptation, current),
+    current.retrievalAttempted ? current.retrievedMemories : undefined
+  );
+  const remainsClarifying = current.phase === "clarifying";
+  const nextState = {
+    ...current,
+    phase: remainsClarifying ? "clarifying" as const : "recommended" as const,
+    situationMap: preserveAcceptedMapItems(generation.output.situationMap, situationMap, current.revisions),
+    ...(remainsClarifying ? { recommendation: undefined } : { recommendation: recommendationFromOutput(generation.output) }),
+    fallback: current.fallback || generation.fallback,
+    memoryExplanations: generation.explanations,
+    retrievedMemories: generation.memories,
+    retrievalAttempted: generation.retrievalAttempted,
+    adaptationStatus: generation.status,
+    guidancePreferenceIds: generation.preferenceIds,
+    activity: [
+      ...activity,
+      { kind: "generation" as const, message: "The Situation map was updated from the person's stated context." },
+      ...(remainsClarifying
+        ? [{ kind: "clarification-question" as const, message: "The current clarification remains available." }]
+        : [{ kind: "recommendation-regenerated" as const, message: "The recommendation was updated from the person's stated context." }]),
+      ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])
+    ]
+  };
+  return {
+    kind: "ok",
+    state: withUndoableUpdate(
+      nextState,
+      before,
+      "stated-context",
+      "Added stated context and refreshed the visible protocol state.",
+      message,
+      generation.output.guideResponse ?? guideResponseForState(nextState, "The visible protocol state was updated from that context."),
+      [
+        { kind: "situation-map", summary: "The new stated context was added to the Situation map.", undoable: true },
+        ...(remainsClarifying
+          ? [{ kind: "clarification" as const, summary: "The current clarification remains visible.", undoable: false }]
+          : [{ kind: "recommendation" as const, summary: "The recommendation was refreshed from the new context.", undoable: false }])
+      ]
+    )
+  };
+}
+
 async function answerClarification(
   current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
   command: Extract<GooglePivotCommand, { type: "answer-clarification" | "skip-clarification" }>,
@@ -1046,25 +1230,40 @@ async function answerClarification(
         return rest;
       })()
     : current;
+  const before = snapshotForUndo(current);
+  const nextState = {
+    ...stateWithoutRecommendation,
+    phase: nextQuestion ? "clarifying" as const : "recommended" as const,
+    situationMap: preserveAcceptedMapItems(output.situationMap, situationMap, current.revisions),
+    ...(nextQuestion ? {} : { recommendation: recommendationFromOutput(output) }),
+    clarification: {
+      question: nextQuestion ?? current.clarification.question,
+      answers: clarificationAnswers
+    },
+    fallback: current.fallback || generation.fallback,
+    memoryExplanations: generation.explanations,
+    retrievedMemories: generation.memories,
+    retrievalAttempted: generation.retrievalAttempted,
+    adaptationStatus: generation.status,
+    guidancePreferenceIds: generation.preferenceIds,
+    activity: [...current.activity, event, ...(nextQuestion ? [{ kind: "clarification-question" as const, message: "One clarification question is ready." }] : [{ kind: "generation" as const, message: "The recommendation was updated from the clarification." }]), ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
+  };
   return {
     kind: "ok",
-    state: {
-      ...stateWithoutRecommendation,
-      phase: nextQuestion ? "clarifying" : "recommended",
-      situationMap: preserveAcceptedMapItems(output.situationMap, situationMap, current.revisions),
-      ...(nextQuestion ? {} : { recommendation: recommendationFromOutput(output) }),
-      clarification: {
-        question: nextQuestion ?? current.clarification.question,
-        answers: clarificationAnswers
-      },
-      fallback: current.fallback || generation.fallback,
-      memoryExplanations: generation.explanations,
-      retrievedMemories: generation.memories,
-      retrievalAttempted: generation.retrievalAttempted,
-      adaptationStatus: generation.status,
-      guidancePreferenceIds: generation.preferenceIds,
-      activity: [...current.activity, event, ...(nextQuestion ? [{ kind: "clarification-question" as const, message: "One clarification question is ready." }] : [{ kind: "generation" as const, message: "The recommendation was updated from the clarification." }]), ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
-    }
+    state: withUndoableUpdate(
+      nextState,
+      before,
+      "clarification",
+      skipped ? "Skipped a clarification question." : "Added a clarification answer to the Situation map.",
+      skipped ? "Skip the clarification question." : answer ?? "Answer the clarification question.",
+      output.guideResponse ?? guideResponseForState(nextState, nextQuestion ? "The current clarification remains visible." : "The recommendation now reflects your answer."),
+      [
+        { kind: "clarification", summary: skipped ? "The clarification was skipped." : "The answer was added as stated context.", undoable: true },
+        ...(nextQuestion
+          ? [{ kind: "clarification" as const, summary: "One clarification remains before recommendation.", undoable: false }]
+          : [{ kind: "recommendation" as const, summary: "The recommendation was updated from the clarification.", undoable: false }])
+      ]
+    )
   };
 }
 
@@ -1093,23 +1292,38 @@ async function resolveContradiction(
   );
   situationMapAfterResolution.contradictions = situationMapAfterResolution.contradictions
     .filter((item) => item.id !== command.itemId);
+  const before = snapshotForUndo(current);
+  const nextState = {
+    ...current,
+    situationMap: situationMapAfterResolution,
+    ...(current.phase === "recommended" ? { recommendation: recommendationFromOutput(generation.output) } : { recommendation: undefined }),
+    fallback: current.fallback || generation.fallback,
+    memoryExplanations: generation.explanations,
+    retrievedMemories: generation.memories,
+    retrievalAttempted: generation.retrievalAttempted,
+    adaptationStatus: generation.status,
+    guidancePreferenceIds: generation.preferenceIds,
+    activity: [...current.activity, {
+      kind: "contradiction-resolved" as const,
+      message: "The person resolved a Situation-map contradiction and the recommendation was updated."
+    }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
+  };
   return {
     kind: "ok",
-    state: {
-      ...current,
-      situationMap: situationMapAfterResolution,
-      ...(current.phase === "recommended" ? { recommendation: recommendationFromOutput(generation.output) } : { recommendation: undefined }),
-      fallback: current.fallback || generation.fallback,
-      memoryExplanations: generation.explanations,
-      retrievedMemories: generation.memories,
-      retrievalAttempted: generation.retrievalAttempted,
-      adaptationStatus: generation.status,
-      guidancePreferenceIds: generation.preferenceIds,
-      activity: [...current.activity, {
-        kind: "contradiction-resolved",
-        message: "The person resolved a Situation-map contradiction and the recommendation was updated."
-      }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
-    }
+    state: withUndoableUpdate(
+      nextState,
+      before,
+      "contradiction-resolution",
+      "Resolved a contradiction in the Situation map.",
+      "Resolve the contradiction.",
+      generation.output.guideResponse ?? guideResponseForState(nextState, "The contradiction was removed from the visible map."),
+      [
+        { kind: "situation-map", summary: "The contradiction was removed from the Situation map.", undoable: true },
+        ...(current.phase === "recommended"
+          ? [{ kind: "recommendation" as const, summary: "The recommendation was refreshed after the resolution.", undoable: false }]
+          : [])
+      ]
+    )
   };
 }
 
@@ -1146,30 +1360,46 @@ async function correctMap(
     provenance: item.provenance,
     editedBy: "person"
   };
+  const remainsClarifying = current.phase === "clarifying";
+  const before = snapshotForUndo(current);
+  const nextState = {
+    ...current,
+    phase: remainsClarifying ? "clarifying" as const : "recommended" as const,
+    situationMap: preserveAcceptedMapItems(output.situationMap, situationMap, [...current.revisions, revision]),
+    ...(remainsClarifying ? { recommendation: undefined } : { recommendation: recommendationFromOutput(output) }),
+    selectedPivot: undefined,
+    outcome: undefined,
+    fallback: current.fallback || generation.fallback,
+    memoryExplanations: generation.explanations,
+    retrievedMemories: generation.memories,
+    retrievalAttempted: generation.retrievalAttempted,
+    adaptationStatus: generation.status,
+    guidancePreferenceIds: generation.preferenceIds,
+    revisions: [
+      ...current.revisions,
+      revision
+    ],
+    activity: [...current.activity, {
+      kind: "map-revised" as const,
+      message: "The person corrected the Situation map; the recommendation was updated."
+    }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
+  };
   return {
     kind: "ok",
-    state: {
-      ...current,
-      phase: "recommended",
-      situationMap: preserveAcceptedMapItems(output.situationMap, situationMap, [...current.revisions, revision]),
-      recommendation: recommendationFromOutput(output),
-      selectedPivot: undefined,
-      outcome: undefined,
-      fallback: current.fallback || generation.fallback,
-      memoryExplanations: generation.explanations,
-      retrievedMemories: generation.memories,
-      retrievalAttempted: generation.retrievalAttempted,
-      adaptationStatus: generation.status,
-      guidancePreferenceIds: generation.preferenceIds,
-      revisions: [
-        ...current.revisions,
-        revision
-      ],
-      activity: [...current.activity, {
-        kind: "map-revised",
-        message: "The person corrected the Situation map; the recommendation was updated."
-      }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted protocol state." }] : [])]
-    }
+    state: withUndoableUpdate(
+      nextState,
+      before,
+      "map-correction",
+      "Corrected a Situation-map item.",
+      `Correction: ${text}`,
+      output.guideResponse ?? guideResponseForState(nextState, remainsClarifying ? "The map is corrected; the current question remains available." : "The recommendation now reflects the corrected map."),
+      [
+        { kind: "situation-map", summary: "The corrected map item is visible with person provenance.", undoable: true },
+        ...(remainsClarifying
+          ? [{ kind: "clarification" as const, summary: "The current clarification remains available.", undoable: false }]
+          : [{ kind: "recommendation" as const, summary: "The recommendation was refreshed from the corrected map.", undoable: false }])
+      ]
+    )
   };
 }
 
@@ -1235,16 +1465,26 @@ async function recordStepFeedback(
     kind: "step-feedback" as const,
     message: `The person reported that the current step was ${feedback.status}.`
   }];
+  const before = snapshotForUndo(current);
 
   if (current.miniPlan.stepNumber >= current.miniPlan.maxSteps) {
+    const nextState = {
+      ...current,
+      situationMap,
+      miniPlan: { ...current.miniPlan, completedActions, feedback: feedbackHistory },
+      activity
+    };
     return {
       kind: "ok",
-      state: {
-        ...current,
-        situationMap,
-        miniPlan: { ...current.miniPlan, completedActions, feedback: feedbackHistory },
-        activity
-      }
+      state: withUndoableUpdate(
+        nextState,
+        before,
+        "feedback",
+        "Recorded feedback for the final mini-plan step.",
+        `Feedback: ${feedback.status}`,
+        guideResponseForState(nextState, "The final step feedback is visible in the Activity trace."),
+        [{ kind: "feedback", summary: `Recorded that the current step was ${feedback.status}.`, undoable: true }]
+      )
     };
   }
 
@@ -1262,25 +1502,313 @@ async function recordStepFeedback(
   );
   const output = generation.output;
   const nextAction = output.primaryAction ?? situationalActionForPivot(requirePivot(output.primaryPivotKind));
+  const nextState = {
+    ...current,
+    situationMap: preserveAcceptedMapItems(output.situationMap, situationMap, current.revisions),
+    recommendation: recommendationFromOutput(output),
+    miniPlan: {
+      currentAction: nextAction,
+      completedActions,
+      feedback: feedbackHistory,
+      stepNumber: current.miniPlan.stepNumber + 1,
+      maxSteps: current.miniPlan.maxSteps
+    },
+    fallback: current.fallback || generation.fallback,
+    activity: [...activity, {
+      kind: "step-generation" as const,
+      message: "The next situational Pivot action was generated from the person's feedback."
+    }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted mini-plan." }] : [])]
+  };
   return {
     kind: "ok",
-    state: {
-      ...current,
-      situationMap: preserveAcceptedMapItems(output.situationMap, situationMap, current.revisions),
-      recommendation: recommendationFromOutput(output),
-      miniPlan: {
-        currentAction: nextAction,
-        completedActions,
-        feedback: feedbackHistory,
-        stepNumber: current.miniPlan.stepNumber + 1,
-        maxSteps: current.miniPlan.maxSteps
-      },
-      fallback: current.fallback || generation.fallback,
-      activity: [...activity, {
-        kind: "step-generation",
-        message: "The next situational Pivot action was generated from the person's feedback."
-      }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted mini-plan." }] : [])]
+    state: withUndoableUpdate(
+      nextState,
+      before,
+      "feedback",
+      "Recorded feedback and generated the next visible mini-plan action.",
+      `Feedback: ${feedback.status}`,
+      output.guideResponse ?? guideResponseForState(nextState, "The next action reflects that feedback."),
+      [
+        { kind: "feedback", summary: `Recorded that the current step was ${feedback.status}.`, undoable: true },
+        { kind: "recommendation", summary: "Generated one next mini-plan action from the feedback.", undoable: false }
+      ]
+    )
+  };
+}
+
+function shrinkCurrentAction(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
+): GooglePivotCommandResult {
+  if (current.phase !== "selected" || !current.miniPlan) {
+    return { kind: "invalid-command", message: "Choose a Pivot before shrinking its current action." };
+  }
+  if (current.pendingConfirmation) {
+    return { kind: "invalid-command", message: "Confirm or cancel the pending action before changing the current action." };
+  }
+  const before = snapshotForUndo(current);
+  const smallerAction = smallerActionFor(current.miniPlan.currentAction);
+  const nextState = {
+    ...current,
+    miniPlan: { ...current.miniPlan, currentAction: smallerAction },
+    activity: [...current.activity, {
+      kind: "action-shrunk" as const,
+      message: "The current Pivot action was made smaller at the person's request."
+    }]
+  };
+  return {
+    kind: "ok",
+    state: withUndoableUpdate(
+      nextState,
+      before,
+      "action-shrink",
+      "Made the current Pivot action smaller.",
+      "Make this action smaller.",
+      guideResponseForState(nextState, "The smaller action is visible and ready when you are."),
+      [{ kind: "action-shrink", summary: "The current action now contains one smaller step.", undoable: true }]
+    )
+  };
+}
+
+function requestOutcomeConfirmation(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  outcome: PivotOutcome
+): GooglePivotCommandResult {
+  if (current.pendingConfirmation) {
+    return { kind: "invalid-command", message: "Confirm or cancel the pending outcome before submitting another one." };
+  }
+  const confirmation: GooglePendingConfirmation = {
+    id: `confirmation-${current.conversation.length + 1}`,
+    kind: "record-outcome",
+    summary: current.saveRequested
+      ? "Record this outcome and save the Check-in?"
+      : "Record this Pivot outcome for this session?",
+    outcome
+  };
+  const nextState = {
+    ...current,
+    pendingConfirmation: confirmation,
+    activity: [...current.activity, {
+      kind: "confirmation-requested" as const,
+      message: "The person was shown a confirmation before the Pivot outcome was recorded."
+    }]
+  };
+  return {
+    kind: "ok",
+    state: appendConversationTurn(
+      nextState,
+      `Record outcome: ${outcome.status}`,
+      guideResponseForState(nextState, confirmation.summary),
+      [{ id: confirmation.id, kind: "confirmation", summary: confirmation.summary, undoable: false }]
+    )
+  };
+}
+
+function requestMemoryConfirmation(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  command: Extract<GooglePivotCommand, { type: "forget-memory" | "delete-memory" }>
+): GooglePivotCommandResult {
+  if (current.pendingConfirmation) {
+    return { kind: "invalid-command", message: "Confirm or cancel the pending action before changing memory." };
+  }
+  const confirmation: GooglePendingConfirmation = {
+    id: `confirmation-${current.conversation.length + 1}`,
+    kind: command.type,
+    summary: command.type === "forget-memory"
+      ? "Forget this saved memory?"
+      : "Delete this saved memory?",
+    memoryId: command.memoryId
+  };
+  const nextState = {
+    ...current,
+    pendingConfirmation: confirmation,
+    activity: [...current.activity, {
+      kind: "confirmation-requested" as const,
+      message: "The person was shown a confirmation before changing saved memory."
+    }]
+  };
+  return {
+    kind: "ok",
+    state: appendConversationTurn(
+      nextState,
+      command.type === "forget-memory" ? "Forget this memory." : "Delete this memory.",
+      guideResponseForState(nextState, confirmation.summary),
+      [{ id: confirmation.id, kind: "confirmation", summary: confirmation.summary, undoable: false }]
+    )
+  };
+}
+
+async function applyMemoryControl(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  command: Extract<GooglePivotCommand, { type: "exclude-memory" | "forget-memory" | "delete-memory" }>,
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
+): Promise<GooglePivotCommandResult> {
+  try {
+    if (command.type === "exclude-memory" && adaptation?.excludeMemory && !(await adaptation.excludeMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
+      return { kind: "invalid-command", message: "That memory could not be excluded." };
     }
+    if (command.type === "forget-memory" && adaptation?.forgetMemory && !(await adaptation.forgetMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
+      return { kind: "invalid-command", message: "That memory could not be forgotten." };
+    }
+    if (command.type === "delete-memory" && adaptation?.deleteMemory && !(await adaptation.deleteMemory({ ownerSubject: adaptation.ownerSubject, memoryId: command.memoryId }))) {
+      return { kind: "invalid-command", message: "That memory could not be deleted." };
+    }
+  } catch {
+    return {
+      kind: "dependency-unavailable",
+      message: "Memory controls are temporarily unavailable; the current Situation map was preserved.",
+      state: current
+    };
+  }
+  const nextExcluded = [...new Set([...current.excludedMemoryIds, command.memoryId])];
+  if (!adaptation) {
+    const nextState = {
+      ...current,
+      excludedMemoryIds: nextExcluded,
+      memoryExplanations: current.memoryExplanations.filter((memory) => memory.memoryId !== command.memoryId),
+      activity: [...current.activity, {
+        kind: "recommendation-regenerated" as const,
+        message: "The memory no longer informs this protocol."
+      }]
+    };
+    return {
+      kind: "ok",
+      state: appendConversationTurn(
+        nextState,
+        `${command.type === "exclude-memory" ? "Exclude" : command.type === "forget-memory" ? "Forget" : "Delete"} memory.`,
+        guideResponseForState(nextState, "The memory control was applied to this Check-in."),
+        [{ id: `memory-control-${current.conversation.length + 1}`, kind: "confirmation", summary: "The memory was removed from the visible protocol context.", undoable: false }]
+      )
+    };
+  }
+  const nextAdaptation = { ...adaptation, excludedMemoryIds: nextExcluded };
+  const nextSituationMap = removeMemoryPatterns(current.situationMap, nextExcluded);
+  const generation = await generateAdaptedOutput(current.checkIn.quickDump, nextSituationMap, generator, current.clarification?.answers, nextAdaptation, current.retrievalAttempted ? current.retrievedMemories : undefined);
+  const nextState = {
+    ...current,
+    phase: "recommended" as const,
+    pendingConfirmation: undefined,
+    selectedPivot: undefined,
+    outcome: undefined,
+    situationMap: preserveAcceptedMapItems(generation.output.situationMap, nextSituationMap, current.revisions),
+    recommendation: recommendationFromOutput(generation.output),
+    excludedMemoryIds: nextExcluded,
+    memoryExplanations: generation.explanations,
+    retrievedMemories: generation.memories,
+    retrievalAttempted: generation.retrievalAttempted,
+    guidancePreferenceIds: generation.preferenceIds,
+    adaptationStatus: generation.status,
+    fallback: current.fallback || generation.fallback,
+    activity: [...current.activity, { kind: "recommendation-regenerated" as const, message: command.type === "exclude-memory" ? "The excluded memory no longer informs this recommendation." : "The removed memory no longer informs this recommendation." }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Personalization is unavailable; the accepted Situation map remains usable." }] : [])]
+  };
+  return {
+    kind: "ok",
+    state: appendConversationTurn(
+      nextState,
+      `${command.type === "exclude-memory" ? "Exclude" : command.type === "forget-memory" ? "Forget" : "Delete"} memory.`,
+      generation.output.guideResponse ?? guideResponseForState(nextState, "The recommendation was updated without that memory."),
+      [{ id: `memory-control-${current.conversation.length + 1}`, kind: "recommendation", summary: "The recommendation was refreshed without that memory.", undoable: false }]
+    )
+  };
+}
+
+async function confirmAction(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  confirmationId: string,
+  generator: GooglePivotGenerator,
+  adaptation?: GooglePivotAdaptation
+): Promise<GooglePivotCommandResult> {
+  if (!current.pendingConfirmation) {
+    return { kind: "invalid-command", message: "There is no pending action to confirm." };
+  }
+  if (current.pendingConfirmation.id !== confirmationId) {
+    return { kind: "invalid-command", message: "That confirmation is no longer current." };
+  }
+  const pending = current.pendingConfirmation;
+  const prepared = {
+    ...current,
+    pendingConfirmation: undefined,
+    activity: [...current.activity, {
+      kind: "confirmation-confirmed" as const,
+      message: "The person explicitly confirmed the pending action."
+    }]
+  };
+  if (pending.kind === "forget-memory" || pending.kind === "delete-memory") {
+    if (!pending.memoryId || !adaptation) {
+      return { kind: "invalid-command", message: "The pending memory action is unavailable." };
+    }
+    return applyMemoryControl(prepared, { type: pending.kind, memoryId: pending.memoryId }, generator, adaptation);
+  }
+  if (pending.kind !== "record-outcome" || !pending.outcome || !prepared.selectedPivot) {
+    return { kind: "invalid-command", message: "The pending action is invalid." };
+  }
+  const result = await recordOutcome(prepared, prepared.selectedPivot, pending.outcome, generator);
+  if (result.kind !== "ok") return result;
+  return {
+    kind: "ok",
+    state: appendConversationTurn(
+      result.state,
+      `Confirm outcome: ${pending.outcome.status}`,
+      guideResponseForState(result.state, "The outcome was recorded after your confirmation."),
+      [{ id: `${pending.id}-confirmed`, kind: "confirmation", summary: "The outcome was recorded after explicit confirmation.", undoable: false }]
+    )
+  };
+}
+
+function cancelConfirmation(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  confirmationId: string
+): GooglePivotCommandResult {
+  if (!current.pendingConfirmation) {
+    return { kind: "invalid-command", message: "There is no pending action to cancel." };
+  }
+  if (current.pendingConfirmation.id !== confirmationId) {
+    return { kind: "invalid-command", message: "That confirmation is no longer current." };
+  }
+  const nextState = {
+    ...current,
+    pendingConfirmation: undefined,
+    activity: [...current.activity, {
+      kind: "confirmation-cancelled" as const,
+      message: "The person cancelled the pending action; no change was made."
+    }]
+  };
+  return {
+    kind: "ok",
+    state: appendConversationTurn(
+      nextState,
+      "Cancel confirmation.",
+      guideResponseForState(nextState, "Nothing was recorded."),
+      [{ id: `${confirmationId}-cancelled`, kind: "confirmation", summary: "The pending action was cancelled.", undoable: false }]
+    )
+  };
+}
+
+function undoUpdate(
+  current: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  updateId: string
+): GooglePivotCommandResult {
+  const latest = current.undoableUpdates.at(-1);
+  if (!latest) return { kind: "invalid-command", message: "There is no reversible update to undo." };
+  if (latest.id !== updateId) return { kind: "invalid-command", message: "Only the most recent reversible update can be undone." };
+  const restored = {
+    ...current,
+    ...latest.before,
+    pendingConfirmation: undefined,
+    undoableUpdates: current.undoableUpdates.slice(0, -1),
+    activity: [...current.activity, {
+      kind: "undo-applied" as const,
+      message: `The person undid this visible update: ${latest.summary}`
+    }]
+  };
+  return {
+    kind: "ok",
+    state: appendConversationTurn(
+      restored,
+      "Undo the last update.",
+      guideResponseForState(restored, "The previous structured protocol state is visible again."),
+      [{ id: `${latest.id}-undo`, kind: "situation-map", summary: `Undid: ${latest.summary}`, undoable: false }]
+    )
   };
 }
 
@@ -1595,6 +2123,171 @@ function recommendationFromOutput(output: GooglePivotGeneratorOutput) {
   };
 }
 
+function initialConversationTurn(
+  quickDump: string,
+  output: GooglePivotGeneratorOutput
+): GoogleConversationalTurn {
+  const turn = {
+    id: "turn-1",
+    userMessage: quickDump,
+    guideResponse: output.guideResponse ?? guideResponseForOutput(output),
+    updates: [
+      {
+        id: "map-created",
+        kind: "situation-map" as const,
+        summary: "Created a Situation map from the Quick dump.",
+        undoable: false
+      },
+      output.clarificationQuestion
+        ? {
+            id: "clarification-1",
+            kind: "clarification" as const,
+            summary: "Asked one useful clarification question.",
+            undoable: false
+          }
+        : {
+            id: "recommendation-1",
+            kind: "recommendation" as const,
+            summary: "Prepared one bounded Pivot and two alternatives.",
+            undoable: false
+          }
+    ]
+  } satisfies GoogleConversationalTurn;
+  validateConversationalTurn(turn);
+  return turn;
+}
+
+function withUndoableUpdate(
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  before: GoogleUndoSnapshot,
+  kind: GoogleUndoableUpdate["kind"],
+  summary: string,
+  userMessage: string,
+  guideResponse: GoogleGuideResponse,
+  updates: Array<Omit<GoogleVisibleProtocolUpdate, "id">>
+): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
+  const id = `update-${state.conversation.length + 1}`;
+  const undoableUpdate: GoogleUndoableUpdate = { id, kind, summary, before };
+  const visibleUpdates = updates.map((update, index) => ({ ...update, id: index === 0 ? id : `${id}-${index + 1}` }));
+  return appendConversationTurn(
+    { ...state, undoableUpdates: [...state.undoableUpdates, undoableUpdate] },
+    userMessage,
+    guideResponse,
+    visibleUpdates
+  );
+}
+
+function appendConversationTurn(
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  userMessage: string,
+  guideResponse: GoogleGuideResponse,
+  updates: GoogleVisibleProtocolUpdate[]
+): Extract<GooglePivotResult, { kind: "pivot-protocol" }> {
+  const turn: GoogleConversationalTurn = {
+    id: `turn-${state.conversation.length + 1}`,
+    userMessage: userMessage.trim(),
+    guideResponse: validatedGuideResponse(guideResponse),
+    updates
+  };
+  validateConversationalTurn(turn);
+  return { ...state, conversation: [...state.conversation, turn] };
+}
+
+function snapshotForUndo(
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
+): GoogleUndoSnapshot {
+  return {
+    situationMap: state.situationMap,
+    phase: state.phase,
+    ...(state.clarification ? { clarification: state.clarification } : {}),
+    revisions: state.revisions,
+    ...(state.selectedPivot ? { selectedPivot: state.selectedPivot } : {}),
+    ...(state.selectedAction ? { selectedAction: state.selectedAction } : {}),
+    ...(state.outcome ? { outcome: state.outcome } : {}),
+    ...(state.recommendation ? { recommendation: state.recommendation } : {}),
+    ...(state.miniPlan ? { miniPlan: state.miniPlan } : {}),
+    memoryExplanations: state.memoryExplanations,
+    retrievedMemories: state.retrievedMemories,
+    retrievalAttempted: state.retrievalAttempted,
+    adaptationStatus: state.adaptationStatus,
+    excludedMemoryIds: state.excludedMemoryIds,
+    guidancePreferenceIds: state.guidancePreferenceIds,
+    fallback: state.fallback
+  };
+}
+
+function smallerActionFor(action: SituationalPivotAction): SituationalPivotAction {
+  const firstStep = action.steps[0] ?? action.fallbackInstruction;
+  return {
+    ...action,
+    id: `${action.id}-smaller`,
+    title: `Try one step: ${firstStep}`.slice(0, 160),
+    instruction: action.fallbackInstruction,
+    goal: "Make only one small part of the selected Pivot doable.",
+    steps: [firstStep],
+    doneWhen: "You have tried this one smaller step, or decided to stop.",
+    estimatedMinutes: 1,
+    fallbackInstruction: "Stop here; no smaller action is required.",
+    whyThisFits: "Shrinking the selected action keeps the next step within the person's control."
+  };
+}
+
+function guideResponseForState(
+  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>,
+  explanation: string
+): GoogleGuideResponse {
+  return validatedGuideResponse({
+    acknowledgment: state.phase === "selected" ? "I’ve kept that change visible." : "I’ve updated the visible Situation map.",
+    explanation,
+    suggestedReplies: state.phase === "clarifying"
+      ? ["Answer the question", "Skip the question"]
+      : ["Choose a Pivot", "Tell me what to change"]
+  });
+}
+
+function guideResponseForOutput(output: GooglePivotGeneratorOutput): GoogleGuideResponse {
+  return validatedGuideResponse({
+    acknowledgment: output.clarificationQuestion
+      ? "I’ve mapped what you shared and have one useful question."
+      : "I’ve mapped what you shared and prepared bounded options.",
+    explanation: output.whyThisPivot,
+    suggestedReplies: output.clarificationQuestion
+      ? ["Answer the question", "Skip the question"]
+      : ["Choose the recommended Pivot", "Choose another option"]
+  });
+}
+
+function validatedGuideResponse(value: unknown): GoogleGuideResponse {
+  if (!isRecord(value) || typeof value.acknowledgment !== "string" || typeof value.explanation !== "string" || !Array.isArray(value.suggestedReplies) || value.suggestedReplies.length > 3 || !value.suggestedReplies.every((reply) => typeof reply === "string")) {
+    throw new Error("Generated conversational guide response is invalid.");
+  }
+  for (const text of [value.acknowledgment, value.explanation, ...value.suggestedReplies]) {
+    if (!text.trim() || text.length > 600) throw new Error("Generated conversational guide response text is invalid.");
+    validateSafeAgentText(text);
+  }
+  return {
+    acknowledgment: value.acknowledgment.trim(),
+    explanation: value.explanation.trim(),
+    suggestedReplies: value.suggestedReplies.map((reply) => reply.trim())
+  };
+}
+
+function validateConversationalTurn(turn: GoogleConversationalTurn): void {
+  if (!turn.id.trim() || !turn.userMessage.trim() || turn.userMessage.length > 10_000 || !Array.isArray(turn.updates)) {
+    throw new Error("Conversational turn is invalid.");
+  }
+  validatedGuideResponse(turn.guideResponse);
+  for (const update of turn.updates) {
+    if (!update.id.trim() || !update.summary.trim() || update.summary.length > 600 || !isVisibleUpdateKind(update.kind) || typeof update.undoable !== "boolean") {
+      throw new Error("Conversational turn update is invalid.");
+    }
+  }
+}
+
+function isVisibleUpdateKind(value: unknown): value is GoogleVisibleProtocolUpdate["kind"] {
+  return ["situation-map", "clarification", "recommendation", "feedback", "action-shrink", "confirmation"].includes(value as string);
+}
+
 function preserveAcceptedMapItems(generated: SituationMap, accepted: SituationMap, revisions: MapRevision[]): SituationMap {
   const preserved = { ...generated };
   for (const section of Object.keys(accepted) as Array<keyof SituationMap>) {
@@ -1902,6 +2595,7 @@ function validateGeneratorOutput(
     validateSafeAgentText(clarificationQuestion.text);
   }
   validateSafeAgentText(output.whyThisPivot);
+  if (output.guideResponse !== undefined) validatedGuideResponse(output.guideResponse);
 
   requirePivot(output.primaryPivotKind);
   if (
@@ -1936,7 +2630,8 @@ function validatedGeneratedOutput(output: unknown, acceptedSituationMap: Situati
     ...output,
     situationMap: preserveAcceptedMapItems(output.situationMap, acceptedSituationMap, []),
     primaryAction: validatedSituationalAction(output.primaryAction, primaryPivot),
-    alternativeActions: alternativePivots.map((pivot, index) => validatedSituationalAction(output.alternativeActions?.[index], pivot))
+    alternativeActions: alternativePivots.map((pivot, index) => validatedSituationalAction(output.alternativeActions?.[index], pivot)),
+    guideResponse: output.guideResponse ? validatedGuideResponse(output.guideResponse) : guideResponseForOutput(output)
   };
 }
 

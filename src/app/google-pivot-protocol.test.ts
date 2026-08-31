@@ -4,7 +4,8 @@ import {
   runGooglePivotCommand,
   runGooglePivotProtocol,
   type GooglePivotGenerator,
-  type SituationMap
+  type SituationMap,
+  type PivotOutcome
 } from "./google-pivot-protocol";
 import { PIVOT_LIBRARY } from "./pivot-library";
 
@@ -19,6 +20,19 @@ const pngBytes = () => {
 };
 const webpBytes = () => new Uint8Array([0x52, 0x49, 0x46, 0x46, 12, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20, 0, 0, 0, 0]);
 const pdfBytes = (pages = 1) => new TextEncoder().encode(`%PDF-1.7\n${Array.from({ length: pages }, (_, index) => `${index + 1} 0 obj\n<< /Type /Page >>\nendobj\n`).join("")}%%EOF`);
+
+async function confirmedOutcome(
+  state: Extract<Awaited<ReturnType<typeof runGooglePivotCommand>>, { kind: "ok" }>['state'],
+  outcome: PivotOutcome,
+  generator?: GooglePivotGenerator
+) {
+  const requested = await runGooglePivotCommand(state, { type: "record-outcome", outcome }, generator);
+  if (requested.kind !== "ok") return requested;
+  return runGooglePivotCommand(requested.state, {
+    type: "confirm-action",
+    confirmationId: requested.state.pendingConfirmation?.id ?? "missing"
+  }, generator);
+}
 
 describe("Google Pivot Protocol", () => {
   it("requires consent before normal generation and builds a provenance-aware map", async () => {
@@ -521,7 +535,7 @@ describe("Google Pivot Protocol", () => {
     const selected = await runGooglePivotCommand(started, { type: "select-pivot", pivotKind: started.recommendation.primary.kind }, generator);
     expect(selected.kind).toBe("ok");
     if (selected.kind !== "ok") return;
-    const recorded = await runGooglePivotCommand(selected.state, { type: "record-outcome", outcome: { status: "completed" } }, generator);
+    const recorded = await confirmedOutcome(selected.state, { status: "completed" }, generator);
 
     expect(recorded.kind).toBe("ok");
     if (recorded.kind !== "ok") return;

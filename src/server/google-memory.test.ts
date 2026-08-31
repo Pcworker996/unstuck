@@ -6,8 +6,29 @@ import {
   validateGoogleEmbedding,
   type GoogleMemoryRepository
 } from "./google-memory";
-import { runGooglePivotCommand, runGooglePivotProtocol, type GooglePivotGenerator } from "../app/google-pivot-protocol";
+import { runGooglePivotCommand, runGooglePivotProtocol, type GooglePivotGenerator, type PivotOutcome } from "../app/google-pivot-protocol";
 import { createInMemoryGoogleProtocolRepository, runGoogleProtocolCommand, startGoogleProtocol } from "./google-protocol";
+
+async function confirmedOutcome(
+  input: {
+    subject: string;
+    protocolId: string;
+    expectedVersion: number;
+    idempotencyKey: string;
+    command: { type: "record-outcome"; outcome: PivotOutcome };
+  },
+  dependencies: Parameters<typeof runGoogleProtocolCommand>[1],
+  generator?: GooglePivotGenerator
+) {
+  const requested = await runGoogleProtocolCommand(input, dependencies, generator);
+  if (requested.kind !== "state") return requested;
+  return runGoogleProtocolCommand({
+    ...input,
+    expectedVersion: requested.state.version,
+    idempotencyKey: `${input.idempotencyKey}-confirm`,
+    command: { type: "confirm-action", confirmationId: requested.state.pendingConfirmation?.id ?? "missing" }
+  }, dependencies, generator);
+}
 
 const vector = (value: number): number[] =>
   Array.from({ length: GOOGLE_EMBEDDING_DIMENSIONS }, (_, index) => index === 0 ? value : 0);
@@ -278,7 +299,7 @@ describe("Google memory boundary", () => {
       command: { type: "select-pivot", pivotKind: "task-first-step" }
     }, { repository: protocolRepository, adaptation });
     expect(select.kind).toBe("state");
-    const outcome = await runGoogleProtocolCommand({
+    const outcome = await confirmedOutcome({
       subject: "person-1", protocolId: "protocol-1", expectedVersion: 2, idempotencyKey: "outcome",
       command: { type: "record-outcome", outcome: { status: "completed", agencyShift: "more-able" } }
     }, { repository: protocolRepository, adaptation });

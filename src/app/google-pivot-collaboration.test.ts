@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   runGooglePivotCommand,
+  type GooglePivotAdaptation,
   type GooglePivotGenerator,
-  type GooglePivotGeneratorOutput
+  type GooglePivotGeneratorOutput,
+  type PivotOutcome
 } from "./google-pivot-protocol";
 import { PIVOT_LIBRARY } from "./pivot-library";
 
@@ -18,6 +20,19 @@ function output(
     whyThisPivot: "A small next step is available.",
     ...(clarificationQuestion ? { clarificationQuestion } : {})
   };
+}
+
+async function confirmedOutcome(
+  state: Extract<Awaited<ReturnType<typeof runGooglePivotCommand>>, { kind: "ok" }>['state'],
+  outcome: PivotOutcome,
+  generator?: GooglePivotGenerator
+) {
+  const requested = await runGooglePivotCommand(state, { type: "record-outcome", outcome }, generator);
+  if (requested.kind !== "ok") return requested;
+  return runGooglePivotCommand(requested.state, {
+    type: "confirm-action",
+    confirmationId: requested.state.pendingConfirmation?.id ?? "missing"
+  }, generator);
 }
 
 describe("collaborative Google Pivot Protocol", () => {
@@ -217,10 +232,7 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(selected.state.phase).toBe("selected");
     expect(selected.state.selectedPivot?.kind).toBe(PIVOT_LIBRARY[0].kind);
 
-    const outcome = await runGooglePivotCommand(selected.state, {
-      type: "record-outcome",
-      outcome: { status: "partly-helpful", agencyShift: "more-able", pivotTimeSeconds: 60 }
-    });
+    const outcome = await confirmedOutcome(selected.state, { status: "partly-helpful", agencyShift: "more-able", pivotTimeSeconds: 60 });
     expect(outcome.kind).toBe("ok");
     if (outcome.kind !== "ok") return;
     expect(outcome.state.phase).toBe("outcome");
@@ -252,10 +264,7 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(selected.kind).toBe("ok");
     if (selected.kind !== "ok") return;
 
-    const outcome = await runGooglePivotCommand(selected.state, {
-      type: "record-outcome",
-      outcome: { status: "completed", agencyShift: "more-able" }
-    });
+    const outcome = await confirmedOutcome(selected.state, { status: "completed", agencyShift: "more-able" });
     expect(outcome.kind).toBe("ok");
     if (outcome.kind !== "ok") return;
     expect(outcome.state.persistence).toBe("saved");
@@ -275,10 +284,7 @@ describe("collaborative Google Pivot Protocol", () => {
       pivotKind: PIVOT_LIBRARY[0].kind
     });
     if (unsavedSelected.kind !== "ok") return;
-    const unsavedOutcome = await runGooglePivotCommand(unsavedSelected.state, {
-      type: "record-outcome",
-      outcome: { status: "skipped" }
-    });
+    const unsavedOutcome = await confirmedOutcome(unsavedSelected.state, { status: "skipped" });
     expect(unsavedOutcome).toMatchObject({ kind: "ok", state: { persistence: "unsaved", derivedMemory: undefined } });
   });
 
@@ -297,10 +303,7 @@ describe("collaborative Google Pivot Protocol", () => {
     });
     if (selected.kind !== "ok") return;
 
-    const outcome = await runGooglePivotCommand(selected.state, {
-      type: "record-outcome",
-      outcome: { status: "partly-helpful", agencyShift: "about-as-able" }
-    }, {
+    const outcome = await confirmedOutcome(selected.state, { status: "partly-helpful", agencyShift: "about-as-able" }, {
       async generate({ situationMap }) { return output(situationMap); },
       async deriveMemory() { throw new Error("memory provider unavailable"); }
     });
@@ -335,10 +338,7 @@ describe("collaborative Google Pivot Protocol", () => {
       });
       expect(selected.kind).toBe("ok");
       if (selected.kind !== "ok") continue;
-      const outcome = await runGooglePivotCommand(selected.state, {
-        type: "record-outcome",
-        outcome: { status, ...(agencyShift ? { agencyShift } : {}) }
-      });
+      const outcome = await confirmedOutcome(selected.state, { status, ...(agencyShift ? { agencyShift } : {}) });
       expect(outcome).toMatchObject({ kind: "ok", state: { outcome: { status, ...(agencyShift ? { agencyShift } : {}) } } });
       if (outcome.kind === "ok") {
         expect(outcome.state).not.toHaveProperty("emotionalState");
@@ -630,5 +630,166 @@ describe("collaborative Google Pivot Protocol", () => {
       kind: "invalid-command",
       message: "Situation-map edits must happen before choosing a Pivot."
     });
+  });
+
+  it("keeps natural context in a temporary timeline and makes the structured update undoable", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I need to sort the move paperwork.",
+      consentGiven: true
+    });
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const added = await runGooglePivotCommand(started.state, {
+      type: "add-context",
+      message: "The landlord needs the checklist by Friday."
+    });
+    expect(added.kind).toBe("ok");
+    if (added.kind !== "ok") return;
+    expect(added.state.situationMap.shared.at(-1)).toMatchObject({
+      text: "The landlord needs the checklist by Friday.",
+      provenance: "person"
+    });
+    expect(added.state.conversation.at(-1)).toMatchObject({
+      userMessage: "The landlord needs the checklist by Friday.",
+      guideResponse: { acknowledgment: expect.any(String) },
+      updates: expect.arrayContaining([expect.objectContaining({ kind: "situation-map", undoable: true })])
+    });
+    const update = added.state.undoableUpdates.at(-1);
+    expect(update).toMatchObject({ kind: "stated-context", summary: expect.any(String) });
+
+    const undone = await runGooglePivotCommand(added.state, {
+      type: "undo-update",
+      updateId: update?.id ?? "missing"
+    });
+    expect(undone).toMatchObject({ kind: "ok", state: { situationMap: started.state.situationMap } });
+    if (undone.kind !== "ok") return;
+    expect(undone.state.undoableUpdates).toEqual([]);
+    expect(undone.state.activity.at(-1)).toMatchObject({ kind: "undo-applied" });
+  });
+
+  it("keeps a clarification visible while corrections change the eventual recommendation", async () => {
+    const generator: GooglePivotGenerator = {
+      async generate({ situationMap, clarificationAnswers }) {
+        const hasFriday = situationMap.shared.some((item) => item.text.includes("Friday"));
+        const answered = Boolean(clarificationAnswers?.length);
+        return {
+          ...output(situationMap, answered ? undefined : { id: "deadline", text: "What timing matters most?" }),
+          primaryPivotKind: hasFriday ? "task-first-step" : "grounding",
+          alternativePivotKinds: hasFriday ? ["reaching-out", "basic-needs-reset"] : ["breathing-focus", "reaching-out"]
+        };
+      }
+    };
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck on moving paperwork.",
+      consentGiven: true
+    }, generator);
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+
+    const corrected = await runGooglePivotCommand(started.state, {
+      type: "correct-map",
+      section: "shared",
+      itemId: "shared-1",
+      text: "I am stuck on moving paperwork due Friday deadline."
+    }, generator);
+    expect(corrected).toMatchObject({ kind: "ok", state: { phase: "clarifying", recommendation: undefined } });
+    if (corrected.kind !== "ok") return;
+
+    const answered = await runGooglePivotCommand(corrected.state, {
+      type: "answer-clarification",
+      questionId: "deadline",
+      answer: "Friday is the deadline."
+    }, generator);
+    expect(answered).toMatchObject({ kind: "ok", state: { phase: "recommended", recommendation: { primary: { kind: "task-first-step" } } } });
+    if (answered.kind !== "ok") return;
+    expect(answered.state.conversation.at(-1)?.updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "recommendation" })
+    ]));
+  });
+
+  it("shows a smaller action as an undoable update and gates final outcome recording", async () => {
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck on a work task.",
+      consentGiven: true
+    });
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok" || !started.state.recommendation) return;
+    const selected = await runGooglePivotCommand(started.state, {
+      type: "select-pivot",
+      pivotKind: started.state.recommendation.primary.kind
+    });
+    expect(selected.kind).toBe("ok");
+    if (selected.kind !== "ok") return;
+
+    const shrunk = await runGooglePivotCommand(selected.state, { type: "shrink-action" });
+    expect(shrunk).toMatchObject({ kind: "ok", state: { phase: "selected", miniPlan: { currentAction: { estimatedMinutes: 1 } } } });
+    if (shrunk.kind !== "ok") return;
+    const shrinkUpdate = shrunk.state.undoableUpdates.at(-1);
+    expect(shrinkUpdate).toMatchObject({ kind: "action-shrink" });
+
+    const requested = await runGooglePivotCommand(shrunk.state, {
+      type: "record-outcome",
+      outcome: { status: "completed", agencyShift: "more-able" }
+    });
+    expect(requested).toMatchObject({ kind: "ok", state: { phase: "selected", pendingConfirmation: { kind: "record-outcome" } } });
+    if (requested.kind !== "ok") return;
+    const confirmationId = requested.state.pendingConfirmation?.id;
+    const confirmed = await runGooglePivotCommand(requested.state, {
+      type: "confirm-action",
+      confirmationId: confirmationId ?? "missing"
+    });
+    expect(confirmed).toMatchObject({ kind: "ok", state: { phase: "outcome", outcome: { status: "completed", agencyShift: "more-able" } } });
+  });
+
+  it("requires visible confirmation before forgetting a saved memory", async () => {
+    let forgetCalls = 0;
+    const adaptation: GooglePivotAdaptation = {
+      ownerSubject: "person-1",
+      embed: async () => new Array(768).fill(0),
+      retrieveSimilarMemories: async () => [],
+      listGuidancePreferences: async () => [],
+      forgetMemory: async () => {
+        forgetCalls += 1;
+        return true;
+      }
+    };
+    const started = await runGooglePivotCommand(undefined, {
+      type: "start",
+      quickDump: "I am stuck on a normal task.",
+      consentGiven: true
+    }, undefined, adaptation);
+    expect(started.kind).toBe("ok");
+    if (started.kind !== "ok") return;
+    const withMemory = {
+      ...started.state,
+      memoryExplanations: [{ memoryId: "memory-1", protocolId: "prior-check-in", text: "A saved Check-in used a small action." }]
+    };
+
+    const requested = await runGooglePivotCommand(withMemory, { type: "forget-memory", memoryId: "memory-1" }, undefined, adaptation);
+    expect(requested).toMatchObject({ kind: "ok", state: { pendingConfirmation: { kind: "forget-memory" } } });
+    expect(forgetCalls).toBe(0);
+    if (requested.kind !== "ok") return;
+
+    const cancelled = await runGooglePivotCommand(requested.state, {
+      type: "cancel-confirmation",
+      confirmationId: requested.state.pendingConfirmation?.id ?? "missing"
+    }, undefined, adaptation);
+    expect(cancelled).toMatchObject({ kind: "ok", state: { pendingConfirmation: undefined } });
+    expect(forgetCalls).toBe(0);
+    if (cancelled.kind !== "ok") return;
+
+    const requestedAgain = await runGooglePivotCommand(cancelled.state, { type: "forget-memory", memoryId: "memory-1" }, undefined, adaptation);
+    expect(requestedAgain.kind).toBe("ok");
+    if (requestedAgain.kind !== "ok") return;
+    const confirmed = await runGooglePivotCommand(requestedAgain.state, {
+      type: "confirm-action",
+      confirmationId: requestedAgain.state.pendingConfirmation?.id ?? "missing"
+    }, undefined, adaptation);
+    expect(confirmed).toMatchObject({ kind: "ok", state: { pendingConfirmation: undefined, memoryExplanations: [] } });
+    expect(forgetCalls).toBe(1);
   });
 });
