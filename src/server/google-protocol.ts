@@ -13,6 +13,7 @@ import type { GoogleMemoryRepository } from "./google-memory";
 import type { GooglePdfTemporaryStorage } from "../app/google-supporting-artifacts";
 import type { GoogleQuotaService } from "./google-quotas";
 import type { GoogleTelemetryLogger } from "./google-telemetry";
+import { isGoogleProtocolExpired, shouldClearUnsavedExpiry, unsavedProtocolExpiresAt } from "./google-protocol-retention";
 
 export type GoogleProtocol = {
   id: string;
@@ -23,21 +24,13 @@ export type GoogleProtocol = {
 
 type StoredGoogleProtocol = GoogleProtocol & {
   ownerSubject: string;
+  expiresAt?: unknown;
   idempotency?: Record<string, { version: number; state: unknown; fingerprint?: string }>;
 };
 
 type IdempotencyLookup =
   | { kind: "match"; protocol: StoredGoogleProtocol }
   | { kind: "conflict"; protocol: StoredGoogleProtocol };
-
-type UnsavedOutcomeReplay = {
-  fingerprint: string;
-  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>;
-  expiresAt: number;
-};
-
-const UNSAVED_OUTCOME_REPLAY_WINDOW_MS = 5 * 60 * 1000;
-const unsavedOutcomeReplays = new Map<string, UnsavedOutcomeReplay>();
 
 export type GoogleProtocolMutation =
   | { kind: "saved"; protocol: GoogleProtocol }
@@ -104,11 +97,13 @@ export async function startGoogleProtocol(
   input: { subject: string },
   dependencies: GoogleProtocolDependencies
 ): Promise<GoogleProtocolResult> {
+  const createdAt = dependencies.now();
   const storedProtocol: StoredGoogleProtocol = {
     id: dependencies.createId(),
     version: 0,
-    createdAt: dependencies.now(),
-    ownerSubject: input.subject
+    createdAt,
+    ownerSubject: input.subject,
+    expiresAt: unsavedProtocolExpiresAt()
   };
 
   await dependencies.repository.create(storedProtocol);
@@ -178,18 +173,11 @@ export async function runGoogleProtocolCommand(
   generator?: GooglePivotGenerator
 ): Promise<GoogleProtocolCommandResult> {
   if (input.command.type === "start") {
-    clearUnsavedOutcomeReplays(input.subject, input.protocolId);
-  }
-  if (input.command.type === "start") {
     const safetyResult = googlePivotSafetyResult(input.command.quickDump);
     if (safetyResult) return { kind: "safety-interruption", result: safetyResult };
   }
 
   const fingerprint = commandFingerprint(input.command);
-  const unsavedReplay = findUnsavedOutcomeReplay(input, fingerprint);
-  if (unsavedReplay) {
-    return { kind: "state", state: unsavedReplay, replayed: true };
-  }
 
   let existing: StoredGoogleProtocol | undefined;
   try {
@@ -214,7 +202,7 @@ export async function runGoogleProtocolCommand(
       protocolId: input.protocolId,
       ownerSubject: input.subject,
       idempotencyKey: input.idempotencyKey,
-    fingerprint
+      fingerprint
     });
   } catch {
     return {
@@ -277,25 +265,6 @@ export async function runGoogleProtocolCommand(
   }
 
   const nextState = { ...stateForPersistence(result.state), version: existing.version + 1 };
-  if (nextState.phase === "outcome" && !nextState.saveRequested) {
-    try {
-      const deleted = await dependencies.repository.delete({
-        protocolId: input.protocolId,
-        ownerSubject: input.subject
-      });
-      if (!deleted) {
-        return { kind: "not-found" };
-      }
-    } catch {
-      return {
-        kind: "dependency-unavailable",
-        message: "The unsaved Check-in could not be cleared; please try again before leaving this page.",
-        state: nextState
-      };
-    }
-    rememberUnsavedOutcomeReplay(input, fingerprint, nextState);
-    return { kind: "state", state: nextState, replayed: false };
-  }
   let saved: GoogleProtocolMutation;
   try {
     saved = await dependencies.repository.saveState({
@@ -303,7 +272,7 @@ export async function runGoogleProtocolCommand(
       ownerSubject: input.subject,
       expectedVersion: input.expectedVersion,
       idempotencyKey: input.idempotencyKey,
-      fingerprint: commandFingerprint(input.command),
+      fingerprint,
       state: nextState
     });
   } catch {
@@ -405,49 +374,10 @@ function stateForPersistence(
       ...retained.situationMap,
       pivotHistory: retained.situationMap.pivotHistory.filter((item) => !item.id.startsWith("pivot-step-"))
     },
-    activity: retained.activity.filter((event) =>
-      event.kind !== "step-feedback"
-      && event.message !== "The next situational Pivot action was generated from the person's feedback."
-    )
+    activity: retained.activity.filter((event) => event.kind !== "step-feedback" && event.kind !== "step-generation")
   };
 }
 
-function unsavedOutcomeReplayKey(input: { subject: string; protocolId: string; idempotencyKey: string }): string {
-  return `${input.subject}:${input.protocolId}:${input.idempotencyKey}`;
-}
-
-function findUnsavedOutcomeReplay(
-  input: { subject: string; protocolId: string; idempotencyKey: string },
-  fingerprint: string
-): Extract<GooglePivotResult, { kind: "pivot-protocol" }> | undefined {
-  const key = unsavedOutcomeReplayKey(input);
-  const replay = unsavedOutcomeReplays.get(key);
-  if (!replay) return undefined;
-  if (replay.expiresAt <= Date.now()) {
-    unsavedOutcomeReplays.delete(key);
-    return undefined;
-  }
-  return replay.fingerprint === fingerprint ? replay.state : undefined;
-}
-
-function rememberUnsavedOutcomeReplay(
-  input: { subject: string; protocolId: string; idempotencyKey: string },
-  fingerprint: string,
-  state: Extract<GooglePivotResult, { kind: "pivot-protocol" }>
-): void {
-  unsavedOutcomeReplays.set(unsavedOutcomeReplayKey(input), {
-    fingerprint,
-    state,
-    expiresAt: Date.now() + UNSAVED_OUTCOME_REPLAY_WINDOW_MS
-  });
-}
-
-function clearUnsavedOutcomeReplays(subject: string, protocolId: string): void {
-  const prefix = `${subject}:${protocolId}:`;
-  for (const key of unsavedOutcomeReplays.keys()) {
-    if (key.startsWith(prefix)) unsavedOutcomeReplays.delete(key);
-  }
-}
 
 function adaptationFor(input: {
   ownerSubject: string;
@@ -520,11 +450,15 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
       protocols.set(protocol.id, protocol);
     },
     async findFirstForOwner(ownerSubject) {
-      return [...protocols.values()].find((protocol) => protocol.ownerSubject === ownerSubject);
+      return [...protocols.values()].find((protocol) => protocol.ownerSubject === ownerSubject && !isGoogleProtocolExpired(protocol.expiresAt));
     },
     async findByIdForOwner({ protocolId, ownerSubject }) {
       const protocol = protocols.get(protocolId);
-      return protocol?.ownerSubject === ownerSubject ? protocol : undefined;
+      if (!protocol || protocol.ownerSubject !== ownerSubject || isGoogleProtocolExpired(protocol.expiresAt)) {
+        if (protocol && protocol.ownerSubject === ownerSubject && isGoogleProtocolExpired(protocol.expiresAt)) protocols.delete(protocolId);
+        return undefined;
+      }
+      return protocol;
     },
     async listSavedForOwner(ownerSubject) {
       return [...protocols.values()].filter((protocol) =>
@@ -541,7 +475,8 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
     },
     async findIdempotent({ protocolId, ownerSubject, idempotencyKey, fingerprint }) {
       const protocol = protocols.get(protocolId);
-      if (!protocol || protocol.ownerSubject !== ownerSubject) {
+      if (!protocol || protocol.ownerSubject !== ownerSubject || isGoogleProtocolExpired(protocol.expiresAt)) {
+        if (protocol && protocol.ownerSubject === ownerSubject && isGoogleProtocolExpired(protocol.expiresAt)) protocols.delete(protocolId);
         return undefined;
       }
       const record = protocol.idempotency?.[idempotencyKey];
@@ -580,6 +515,7 @@ export function createInMemoryGoogleProtocolRepository(): GoogleProtocolReposito
         ...protocol,
         version: protocol.version + 1,
         pivotState: state,
+        ...(shouldClearUnsavedExpiry(state) ? { expiresAt: undefined } : {}),
         idempotency: {
           ...protocol.idempotency,
           [idempotencyKey]: { version: protocol.version + 1, state, fingerprint }

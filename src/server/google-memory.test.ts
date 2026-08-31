@@ -241,6 +241,16 @@ describe("Google memory boundary", () => {
       adaptationStatus: "personalized",
       retrievedMemories: [{ id: "prior-memory" }]
     });
+    expect(result).toMatchObject({
+      activity: expect.arrayContaining([
+        { kind: "memory-retrieval", message: "The server performed the required owner-scoped memory retrieval." }
+      ])
+    });
+    expect(result).not.toMatchObject({
+      activity: expect.arrayContaining([
+        { message: "Genkit called the server-bound retrieve_similar_memories tool once." }
+      ])
+    });
   });
 
   it("creates one approved embedded memory only after a saved outcome", async () => {

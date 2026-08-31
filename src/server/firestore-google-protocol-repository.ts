@@ -1,7 +1,8 @@
-import type { Firestore } from "firebase-admin/firestore";
+import { FieldValue, type Firestore } from "firebase-admin/firestore";
 
 import type { GoogleProtocolRepository } from "./google-protocol";
 import { type GooglePivotResult } from "../app/google-pivot-protocol";
+import { isGoogleProtocolExpired, shouldClearUnsavedExpiry } from "./google-protocol-retention";
 
 const ACCOUNTS_COLLECTION = "personalAccounts";
 const PROTOCOLS_COLLECTION = "protocols";
@@ -11,10 +12,12 @@ export function createFirestoreGoogleProtocolRepository(
 ): GoogleProtocolRepository {
   return {
     async create(protocol) {
-      await protocolDocument(firestore, protocol.ownerSubject, protocol.id).set({
+      const data: Record<string, unknown> = {
         version: protocol.version,
         createdAt: protocol.createdAt
-      });
+      };
+      if (protocol.expiresAt) data.expiresAt = protocol.expiresAt;
+      await protocolDocument(firestore, protocol.ownerSubject, protocol.id).set(data);
     },
     async findFirstForOwner(ownerSubject) {
       const snapshot = await firestore
@@ -22,23 +25,18 @@ export function createFirestoreGoogleProtocolRepository(
         .doc(ownerSubject)
         .collection(PROTOCOLS_COLLECTION)
         .get();
-      const document = snapshot.docs[0];
-      if (!document) {
-        return undefined;
+      for (const document of snapshot.docs) {
+        const value = document.data();
+        if (!isStoredProtocol(value) || isGoogleProtocolExpired(value.expiresAt)) continue;
+        return {
+          id: document.id,
+          ownerSubject,
+          version: value.version,
+          createdAt: value.createdAt,
+          pivotState: value.pivotState
+        };
       }
-
-      const value = document.data();
-      if (!isStoredProtocol(value)) {
-        return undefined;
-      }
-
-      return {
-        id: document.id,
-        ownerSubject,
-        version: value.version,
-        createdAt: value.createdAt,
-        pivotState: value.pivotState
-      };
+      return undefined;
     },
     async findByIdForOwner({ protocolId, ownerSubject }) {
       const snapshot = await protocolDocument(firestore, ownerSubject, protocolId).get();
@@ -47,7 +45,7 @@ export function createFirestoreGoogleProtocolRepository(
       }
 
       const value = snapshot.data();
-      if (!isStoredProtocol(value)) {
+      if (!isStoredProtocol(value) || isGoogleProtocolExpired(value.expiresAt)) {
         return undefined;
       }
 
@@ -90,7 +88,7 @@ export function createFirestoreGoogleProtocolRepository(
         return undefined;
       }
       const value = snapshot.data();
-      if (!isStoredProtocol(value) || !isIdempotencyRecord(value.idempotency?.[idempotencyKey])) {
+      if (!isStoredProtocol(value) || isGoogleProtocolExpired(value.expiresAt) || !isIdempotencyRecord(value.idempotency?.[idempotencyKey])) {
         return undefined;
       }
       const record = value.idempotency[idempotencyKey];
@@ -147,6 +145,7 @@ export function createFirestoreGoogleProtocolRepository(
         transaction.set(reference, {
           version: nextVersion,
           pivotState: persistedState,
+          ...(shouldClearUnsavedExpiry(state) ? { expiresAt: FieldValue.delete() } : {}),
           idempotency: {
             ...(value.idempotency ?? {}),
             [idempotencyKey]: { version: nextVersion, state: persistedState, fingerprint }
@@ -172,6 +171,7 @@ function protocolDocument(firestore: Firestore, ownerSubject: string, protocolId
 function isStoredProtocol(value: unknown): value is {
   version: number;
   createdAt: string;
+  expiresAt?: unknown;
   pivotState?: unknown;
   idempotency?: Record<string, unknown>;
 } {

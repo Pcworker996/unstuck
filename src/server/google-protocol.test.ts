@@ -37,6 +37,23 @@ describe("Google Protocol", () => {
     expect(reloaded).toEqual(created);
   });
 
+  it("expires abandoned unsaved protocol state from the session repository", async () => {
+    const repository = createInMemoryGoogleProtocolRepository();
+    await repository.create({
+      id: "expired-protocol",
+      ownerSubject: "firebase-user-1",
+      version: 1,
+      createdAt: "2026-08-26T12:00:00.000Z",
+      expiresAt: new Date(Date.now() - 1),
+      pivotState: { persistence: "unsaved" }
+    });
+
+    await expect(repository.findByIdForOwner({
+      protocolId: "expired-protocol",
+      ownerSubject: "firebase-user-1"
+    })).resolves.toBeUndefined();
+  });
+
   it("rejects stale mutations and replays a mutation with the same idempotency key", async () => {
     const repository = createInMemoryGoogleProtocolRepository();
     await startGoogleProtocol(
@@ -285,7 +302,7 @@ describe("Google Protocol", () => {
     });
   });
 
-  it("deletes an unsaved Check-in after its final outcome", async () => {
+  it("keeps unsaved outcome state private to session history and idempotently replayable", async () => {
     const repository = createInMemoryGoogleProtocolRepository();
     const dependencies = {
       repository,
@@ -315,7 +332,14 @@ describe("Google Protocol", () => {
     await expect(loadGoogleProtocol(
       { subject: "firebase-user-1", protocolId: "protocol-unsaved" },
       { repository }
-    )).resolves.toEqual({ kind: "not-found" });
+    )).resolves.toMatchObject({
+      kind: "protocol",
+      protocol: { pivotState: { persistence: "unsaved", outcome: { status: "completed" } } }
+    });
+    await expect(listGoogleSavedProtocols(
+      { subject: "firebase-user-1" },
+      { repository }
+    )).resolves.toEqual({ kind: "protocols", protocols: [] });
   });
 
   it("persists only the selected action and final outcome from a completed mini-plan", async () => {
@@ -353,7 +377,7 @@ describe("Google Protocol", () => {
     expect(loaded.protocol.pivotState).toMatchObject({
       activity: expect.not.arrayContaining([
         expect.objectContaining({ kind: "step-feedback" }),
-        expect.objectContaining({ message: "The next situational Pivot action was generated from the person's feedback." })
+        expect.objectContaining({ kind: "step-generation" })
       ])
     });
   });

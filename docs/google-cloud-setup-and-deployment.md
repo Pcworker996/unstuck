@@ -85,11 +85,22 @@ Firebase CLI:
 ~~~bash
 firebase use unstuck-4605f
 firebase deploy --only firestore
+
+# Expire abandoned, unsaved protocol sessions after the application's 24-hour
+# working-state window. Saved Check-ins clear this field before persistence.
+gcloud firestore fields ttls update expiresAt \
+  --collection-group=protocols \
+  --enable-ttl
 ~~~
 
 Run `firebase use` with the actual project ID when deploying elsewhere. The
 Cloud Run service uses Firebase Admin credentials, so the deny-by-default
 client rules do not block server-side access.
+
+The application writes `expiresAt` only for unsaved protocol working state.
+The Firestore TTL policy removes abandoned sessions automatically; the
+application also treats an expired session as unavailable on reads. Saved
+Check-ins remove the field so they are not affected by the TTL policy.
 
 ### Create the private temporary PDF bucket
 

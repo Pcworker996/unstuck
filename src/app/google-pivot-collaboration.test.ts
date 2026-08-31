@@ -72,6 +72,10 @@ describe("collaborative Google Pivot Protocol", () => {
     expect(next.kind).toBe("ok");
     if (next.kind !== "ok") return;
     expect(next.state.miniPlan).toMatchObject({ stepNumber: 2, currentAction: { title: "Synthetic step 2" }, feedback: [{ status: "completed" }] });
+    expect(next.state.activity).toContainEqual({
+      kind: "step-generation",
+      message: "The next situational Pivot action was generated from the person's feedback."
+    });
 
     const finalStep = await runGooglePivotCommand(next.state, {
       type: "record-step-feedback",

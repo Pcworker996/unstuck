@@ -130,7 +130,9 @@ export type ActivityEvent = {
     | "map-revised"
     | "contradiction-resolved"
     | "pivot-selected"
+    | "memory-retrieval"
     | "step-feedback"
+    | "step-generation"
     | "recommendation-regenerated"
     | "pivot-dismissed"
     | "artifact-review"
@@ -464,13 +466,13 @@ export async function runGooglePivotProtocol(
         generator,
         adaptation
       })
-    : { output, status: adaptation ? "unavailable" as const : "not-requested" as const, explanations: [], preferenceIds: [], memories: [], retrievalAttempted: false };
+    : { output, status: adaptation ? "unavailable" as const : "not-requested" as const, explanations: [], preferenceIds: [], memories: [], retrievalAttempted: false, retrievalMode: adaptation ? "unavailable" as const : "not-requested" as const };
   if (adapted.output !== output) {
     output = adapted.output;
     activity.push({ kind: "generation", message: "The Situation map and recommendation adapted from approved context." });
   }
   if (adaptation && generator.usesMemoryTool && adapted.retrievalAttempted) {
-    activity.push({ kind: "generation", message: "Genkit called the server-bound retrieve_similar_memories tool once." });
+    activity.push({ kind: "memory-retrieval", message: memoryRetrievalActivityMessage(adapted.retrievalMode) });
   }
   if (adapted.status === "unavailable") {
     fallback = true;
@@ -1270,7 +1272,7 @@ async function recordStepFeedback(
       },
       fallback: current.fallback || generation.fallback,
       activity: [...activity, {
-        kind: "generation",
+        kind: "step-generation",
         message: "The next situational Pivot action was generated from the person's feedback."
       }, ...(generation.fallback ? [{ kind: "fallback" as const, message: "Curated fallback preserved the accepted mini-plan." }] : [])]
     }
@@ -1299,10 +1301,11 @@ async function generateAdaptedOutput(
   preferenceIds: string[];
   memories: GoogleRetrievedMemory[];
   retrievalAttempted: boolean;
+  retrievalMode: "not-requested" | "tool" | "server-fallback" | "reused" | "direct" | "unavailable";
 }> {
   const generated = await generateValidatedOutput(quickDump, situationMap, generator, clarificationAnswers);
   if (!adaptation) {
-    return { ...generated, status: "not-requested", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: false };
+    return { ...generated, status: "not-requested", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: false, retrievalMode: "not-requested" };
   }
 
   let currentDerivedContext: string;
@@ -1318,7 +1321,8 @@ async function generateAdaptedOutput(
       explanations: [],
       preferenceIds: [],
       memories: [],
-      retrievalAttempted: false
+      retrievalAttempted: false,
+      retrievalMode: "unavailable"
     };
   }
 
@@ -1337,7 +1341,8 @@ async function generateAdaptedOutput(
     explanations: adapted.explanations,
     preferenceIds: adapted.preferenceIds,
     memories: adapted.memories,
-    retrievalAttempted: adapted.retrievalAttempted
+    retrievalAttempted: adapted.retrievalAttempted,
+    retrievalMode: adapted.retrievalMode
   };
 }
 
@@ -1362,6 +1367,7 @@ async function adaptOutput({
   preferenceIds: string[];
   memories: GoogleRetrievedMemory[];
   retrievalAttempted: boolean;
+  retrievalMode: "tool" | "server-fallback" | "reused" | "direct" | "unavailable";
 }> {
   try {
     const excludedMemoryIds = adaptation.excludedMemoryIds ?? [];
@@ -1385,6 +1391,13 @@ async function adaptOutput({
       ? await retrieveMemories(adaptation, currentDerivedContext, excludedMemoryIds)
       : [];
     const retrievalAttempted = Boolean(reuseMemories || toolState?.wasCalled() || toolWasSkipped || !generator.usesMemoryTool);
+    const retrievalMode = reuseMemories
+      ? "reused" as const
+      : toolWasSkipped
+        ? "server-fallback" as const
+        : generator.usesMemoryTool
+          ? "tool" as const
+          : "direct" as const;
     const resolvedMemories = sanitizeRetrievedMemories(
       toolWasSkipped
         ? fallbackMemories
@@ -1397,7 +1410,7 @@ async function adaptOutput({
       text: `A saved Check-in used “${memory.selectedActionTitle ?? memory.selectedPivotTitle}” and was marked ${memory.outcome.status}.`
     }));
     if (resolvedMemories.length === 0 && guidancePreferences.length === 0) {
-      return { output: baseOutput, status: "no-match", explanations: [], preferenceIds: [], memories: [], retrievalAttempted };
+      return { output: baseOutput, status: "no-match", explanations: [], preferenceIds: [], memories: [], retrievalAttempted, retrievalMode };
     }
     adaptedOutput = toolWasSkipped
       ? fallbackAdaptation(situationMap, resolvedMemories, guidancePreferences)
@@ -1413,11 +1426,21 @@ async function adaptOutput({
       explanations,
       preferenceIds: guidancePreferences.map((preference) => preference.id),
       memories: [...resolvedMemories],
-      retrievalAttempted
+      retrievalAttempted,
+      retrievalMode
     };
   } catch {
-    return { output: { ...fallbackOutput("", situationMap), situationMap }, status: "unavailable", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: true };
+    return { output: { ...fallbackOutput("", situationMap), situationMap }, status: "unavailable", explanations: [], preferenceIds: [], memories: [], retrievalAttempted: true, retrievalMode: "unavailable" };
   }
+}
+
+function memoryRetrievalActivityMessage(
+  retrievalMode: "not-requested" | "tool" | "server-fallback" | "reused" | "direct" | "unavailable"
+): string {
+  if (retrievalMode === "tool") return "Genkit called the server-bound retrieve_similar_memories tool once.";
+  if (retrievalMode === "server-fallback") return "The server performed the required owner-scoped memory retrieval.";
+  if (retrievalMode === "reused") return "The previously retrieved owner-scoped memories were reused for this Check-in.";
+  return "The owner-scoped memory retrieval was unavailable; no memory results were used.";
 }
 
 async function retrieveMemories(
